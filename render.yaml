@@ -1,0 +1,23 @@
+cat > render.yaml << 'EOF'
+services:
+  - type: worker
+    name: cement-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_TOKEN
+        sync: false
+      - key: STOREKEEPER_TOKEN
+        sync: false
+      - key: OPERATOR_TOKEN
+        sync: false
+      - key: DATABASE_URL
+        value: sqlite+aiosqlite:///data/cement_stock.db
+    disks:
+      - name: bot-data
+        mountPath: /data
+        sizeGB: 1
+EOF
