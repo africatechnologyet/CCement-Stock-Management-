@@ -4,7 +4,7 @@ from typing import Any, Awaitable, Callable, Dict
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject, Message, CallbackQuery
 
-user_last_command = defaultdict(datetime)
+user_last_command = defaultdict(lambda: datetime.utcnow())
 
 class ThrottlingMiddleware(BaseMiddleware):
     async def __call__(
