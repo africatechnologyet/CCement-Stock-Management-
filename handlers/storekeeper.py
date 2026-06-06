@@ -6,7 +6,16 @@ from aiogram.types import Message, CallbackQuery
 from datetime import datetime
 import asyncio
 from database.models import UserRole
-from database.queries import AsyncSessionLocal, add_receipt, get_receipts, get_receipts_count, add_audit_log, get_all_users
+from database.queries import (
+    AsyncSessionLocal,
+    add_receipt,
+    get_receipts,
+    get_receipts_count,
+    add_audit_log,
+    get_all_users,
+    get_consumptions,
+    get_consumptions_count,
+)
 from keyboards.reply import main_menu, cancel_kb, back_kb, confirm_kb
 from keyboards.pagination import pagination_kb
 from utils.alerts import check_and_send_low_stock_alert
@@ -74,15 +83,19 @@ async def receive_quantity(message: Message, state: FSMContext, db_user):
         await message.answer("Step 2/3 — Truck Number:", reply_markup=back_kb())
         return
     try:
-        qty = float(message.text.strip().replace(",",""))
-        if qty <= 0: raise ValueError
+        qty = float(message.text.strip().replace(",", ""))
+        if qty <= 0:
+            raise ValueError
     except ValueError:
         await message.answer("⚠️ Invalid quantity.")
         return
     await state.update_data(quantity=qty)
     data = await state.get_data()
     await state.set_state(ReceiptStates.confirm)
-    await message.answer(f"📋 Confirm Receipt\n🏭 Supplier: {data['supplier']}\n🚚 Truck: {data['truck']}\n⚖️ Quantity: {fmt_kg(qty)}\nConfirm?", reply_markup=confirm_kb())
+    await message.answer(
+        f"📋 Confirm Receipt\n🏭 Supplier: {data['supplier']}\n🚚 Truck: {data['truck']}\n⚖️ Quantity: {fmt_kg(qty)}\nConfirm?",
+        reply_markup=confirm_kb(),
+    )
 
 @router.message(ReceiptStates.confirm)
 async def receive_confirm(message: Message, state: FSMContext, db_user, bot):
@@ -98,8 +111,16 @@ async def receive_confirm(message: Message, state: FSMContext, db_user, bot):
     await state.clear()
     try:
         async with AsyncSessionLocal() as session:
-            receipt, new_stock = await add_receipt(session, db_user.id, data["supplier"], data["truck"], data["quantity"])
-            await add_audit_log(session, message.from_user.id, "RECEIPT_ADDED", f"Supplier: {data['supplier']}, Qty: {data['quantity']} kg", user_id=db_user.id)
+            receipt, new_stock = await add_receipt(
+                session, db_user.id, data["supplier"], data["truck"], data["quantity"]
+            )
+            await add_audit_log(
+                session,
+                message.from_user.id,
+                "RECEIPT_ADDED",
+                f"Supplier: {data['supplier']}, Qty: {data['quantity']} kg",
+                user_id=db_user.id,
+            )
 
             # Background notification to admins
             notif_text = (
@@ -112,6 +133,7 @@ async def receive_confirm(message: Message, state: FSMContext, db_user, bot):
                 f"👤 Recorded by: {db_user.full_name}\n"
                 f"🕐 {fmt_dt(datetime.utcnow())}"
             )
+
             async def notify():
                 async with AsyncSessionLocal() as ns:
                     all_users = await get_all_users(ns)
@@ -121,9 +143,13 @@ async def receive_confirm(message: Message, state: FSMContext, db_user, bot):
                                 await bot.send_message(u.telegram_id, notif_text, parse_mode="HTML")
                             except Exception as e:
                                 logger.warning(f"Notify admin {u.telegram_id} failed: {e}")
+
             asyncio.create_task(notify())
 
-        await message.answer(f"✅ Receipt recorded! New stock: {fmt_kg(new_stock)}", reply_markup=main_menu(db_user.role))
+        await message.answer(
+            f"✅ Receipt recorded! New stock: {fmt_kg(new_stock)}",
+            reply_markup=main_menu(db_user.role),
+        )
         await check_and_send_low_stock_alert(bot, new_stock)
     except Exception as e:
         await message.answer(f"❌ Error: {e}", reply_markup=main_menu(db_user.role))
@@ -136,7 +162,9 @@ async def cmd_history(message: Message, state: FSMContext, db_user):
     await state.update_data(page=1, db_user=db_user)
     await show_history_page(message, 1, state)
 
-async def show_history_page(message: Message, page: int, state: FSMContext, callback_query: CallbackQuery = None):
+async def show_history_page(
+    message: Message, page: int, state: FSMContext, callback_query: CallbackQuery = None
+):
     data = await state.get_data()
     db_user = data.get("db_user")
     if not db_user:
@@ -150,19 +178,25 @@ async def show_history_page(message: Message, page: int, state: FSMContext, call
             title = "📜 Recent Receipts"
             lines = []
             for r in records:
-                lines.append(f"#{r.id} | {fmt_dt(r.timestamp)}\n   {fmt_kg(r.quantity_kg)} from {r.supplier_name} ({r.truck_number})\n   Stock after: {fmt_kg(r.stock_after)}")
+                lines.append(
+                    f"#{r.id} | {fmt_dt(r.timestamp)}\n"
+                    f"   {fmt_kg(r.quantity_kg)} from {r.supplier_name} ({r.truck_number})\n"
+                    f"   Stock after: {fmt_kg(r.stock_after)}"
+                )
         elif db_user.role == UserRole.OPERATOR:
-            from database.queries import get_consumptions, get_consumptions_count
             records = await get_consumptions(session, user_id=db_user.id, offset=offset, limit=limit)
             total = await get_consumptions_count(session, user_id=db_user.id)
             title = "📜 Recent Consumptions"
             lines = []
             for r in records:
                 m3_str = f" | {r.cubic_meters} m³ @ {r.kg_per_m3} kg/m³" if r.cubic_meters else ""
-                lines.append(f"#{r.id} | {fmt_dt(r.timestamp)}\n   {fmt_kg(r.quantity_kg)}{m3_str}\n   Stock after: {fmt_kg(r.stock_after)}")
+                lines.append(
+                    f"#{r.id} | {fmt_dt(r.timestamp)}\n"
+                    f"   {fmt_kg(r.quantity_kg)}{m3_str}\n"
+                    f"   Stock after: {fmt_kg(r.stock_after)}"
+                )
         else:  # admin
             receipts = await get_receipts(session, offset=offset, limit=limit)
-            from database.queries import get_consumptions
             consumptions = await get_consumptions(session, offset=offset, limit=limit)
             total_rec = await get_receipts_count(session)
             total_cons = await get_consumptions_count(session)
@@ -170,15 +204,21 @@ async def show_history_page(message: Message, page: int, state: FSMContext, call
             title = "📜 Recent Transactions"
             lines = ["Receipts:"]
             for r in receipts:
-                lines.append(f"  📥 #{r.id} {fmt_dt(r.timestamp)} | {fmt_kg(r.quantity_kg)} from {r.supplier_name}")
+                lines.append(
+                    f"  📥 #{r.id} {fmt_dt(r.timestamp)} | {fmt_kg(r.quantity_kg)} from {r.supplier_name}"
+                )
             lines.append("\nConsumptions:")
             for c in consumptions:
                 m3_str = f" | {c.cubic_meters} m³" if c.cubic_meters else ""
-                lines.append(f"  📤 #{c.id} {fmt_dt(c.timestamp)} | {fmt_kg(c.quantity_kg)}{m3_str}")
+                lines.append(
+                    f"  📤 #{c.id} {fmt_dt(c.timestamp)} | {fmt_kg(c.quantity_kg)}{m3_str}"
+                )
+
     if not lines:
         text = "No records found."
     else:
         text = f"{title}\n\n" + "\n".join(lines)
+
     total_pages = (total + limit - 1) // limit
     kb = pagination_kb(page, total_pages, "history")
     if callback_query:
