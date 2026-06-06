@@ -1,12 +1,35 @@
+"""
+Admin-only handlers: /adduser, /users, /adjust, /set_low_stock,
+/add_recipient, /recipients, /del_recipient, /audit
+"""
+import re
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
-import re
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, CallbackQuery
+
 from database.models import UserRole, AdjustmentType
-from database.queries import AsyncSessionLocal, get_user_by_telegram_id, create_user, get_all_users, add_adjustment, set_setting, get_low_stock_threshold, add_recipient, list_recipients, remove_recipient, get_audit_logs, add_audit_log
-from keyboards.reply import main_menu, cancel_kb, adjustment_type_kb, back_kb, back_confirm_kb, group_type_kb, confirm_kb, role_selection_kb
+from database.queries import (
+    AsyncSessionLocal,
+    get_user_by_telegram_id,
+    create_user,
+    get_all_users,
+    add_adjustment,
+    set_setting,
+    get_low_stock_threshold,
+    add_recipient,
+    list_recipients,
+    remove_recipient,
+    get_audit_logs,
+    add_audit_log,
+    get_audit_logs_count,
+)
+from keyboards.reply import (
+    main_menu, cancel_kb, adjustment_type_kb, back_kb, back_confirm_kb,
+    group_type_kb, confirm_kb, role_selection_kb
+)
+from keyboards.pagination import pagination_kb
 from utils.alerts import check_and_send_low_stock_alert
 from utils.formatters import fmt_kg, fmt_dt
 from utils.logger import logger
@@ -16,7 +39,8 @@ router = Router()
 def _is_admin(db_user):
     return db_user and db_user.is_active and db_user.role == UserRole.ADMIN
 
-# ---------- ADD USER ----------
+
+# ========== ADD USER ==========
 class AddUserStates(StatesGroup):
     telegram_id = State()
     full_name = State()
@@ -30,7 +54,10 @@ async def cmd_adduser(message: Message, state: FSMContext, db_user):
         return
     await state.clear()
     await state.set_state(AddUserStates.telegram_id)
-    await message.answer("👤 <b>Add New User</b>\n\nStep 1/3 — Enter Telegram ID:", parse_mode="HTML", reply_markup=cancel_kb())
+    await message.answer(
+        "👤 <b>Add New User</b>\n\nStep 1/3 — Enter Telegram ID:",
+        parse_mode="HTML", reply_markup=cancel_kb()
+    )
 
 @router.message(AddUserStates.telegram_id)
 async def adduser_telegram_id(message: Message, state: FSMContext, db_user):
@@ -100,7 +127,8 @@ async def adduser_confirm(message: Message, state: FSMContext, db_user):
         await add_audit_log(session, message.from_user.id, "USER_ADDED", f"Added {data['full_name']} as {data['role'].value}", user_id=db_user.id)
     await message.answer(f"✅ User {data['full_name']} added.", reply_markup=main_menu(db_user.role))
 
-# ---------- USERS LIST ----------
+
+# ========== USERS LIST ==========
 @router.message(Command("users"))
 @router.message(F.text == "👥 Users")
 async def cmd_users(message: Message, db_user):
@@ -118,7 +146,8 @@ async def cmd_users(message: Message, db_user):
         lines.append(f"{status} {u.full_name} | {u.role.value.title()} | ID: {u.telegram_id}")
     await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=main_menu(db_user.role))
 
-# ---------- STOCK ADJUSTMENT ----------
+
+# ========== STOCK ADJUSTMENT ==========
 class AdjustStates(StatesGroup):
     adj_type = State()
     quantity = State()
@@ -152,7 +181,7 @@ async def adjust_type(message: Message, state: FSMContext):
 async def adjust_quantity(message: Message, state: FSMContext, db_user):
     if message.text.startswith('/'):
         await state.clear()
-        await message.answer("Operation cancelled. Use /start.")
+        await message.answer("Cancelled.")
         return
     if message.text == "❌ Cancel":
         await state.clear()
@@ -209,7 +238,8 @@ async def adjust_confirm(message: Message, state: FSMContext, db_user, bot):
     except Exception as e:
         await message.answer(f"❌ Error: {e}", reply_markup=main_menu(db_user.role))
 
-# ---------- SET LOW STOCK ----------
+
+# ========== SET LOW STOCK ==========
 class SetLowStockStates(StatesGroup):
     value = State()
 
@@ -247,7 +277,8 @@ async def set_low_stock_value(message: Message, state: FSMContext, db_user):
         await add_audit_log(session, message.from_user.id, "LOW_STOCK_THRESHOLD_SET", f"Threshold = {val} kg", user_id=db_user.id)
     await message.answer(f"✅ Threshold set to {fmt_kg(val)}.", reply_markup=main_menu(db_user.role))
 
-# ---------- ADD RECIPIENT ----------
+
+# ========== ADD RECIPIENT ==========
 class AddRecipientStates(StatesGroup):
     telegram_id = State()
     label = State()
@@ -301,7 +332,8 @@ async def add_recipient_type(message: Message, state: FSMContext, db_user):
         await add_audit_log(session, message.from_user.id, "RECIPIENT_ADDED", f"Label: {data['label']}, ID: {data['telegram_id']}", user_id=db_user.id)
     await message.answer(f"✅ Recipient {data['label']} added.", reply_markup=main_menu(db_user.role))
 
-# ---------- LIST RECIPIENTS ----------
+
+# ========== LIST RECIPIENTS ==========
 @router.message(Command("recipients"))
 @router.message(F.text == "📋 Recipients")
 async def cmd_recipients(message: Message, db_user):
@@ -320,7 +352,8 @@ async def cmd_recipients(message: Message, db_user):
         lines.append(f"{status} {r.label} | {type_str} | ID: {r.telegram_id}")
     await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=main_menu(db_user.role))
 
-# ---------- REMOVE RECIPIENT ----------
+
+# ========== REMOVE RECIPIENT ==========
 class DelRecipientStates(StatesGroup):
     confirm = State()
 
@@ -360,80 +393,22 @@ async def del_recipient_confirm(message: Message, state: FSMContext, db_user):
             await message.answer("❌ Not found.")
     await state.clear()
 
-# ---------- AUDIT LOG ----------
+
+# ========== AUDIT LOG (WITH PAGINATION) ==========
 @router.message(Command("audit"))
 @router.message(F.text == "🕵️ Audit Log")
-async def cmd_audit(message: Message, db_user):
+async def cmd_audit(message: Message, state: FSMContext, db_user):
     if not _is_admin(db_user):
         await message.answer("❌ Admin only.")
         return
-    async with AsyncSessionLocal() as session:
-        logs = await get_audit_logs(session, limit=20)
-    if not logs:
-        await message.answer("No logs.", reply_markup=main_menu(db_user.role))
-        return
-    lines = ["🕵️ Audit Log (last 20):\n"]
-    for log in logs:
-        lines.append(f"🔹 {fmt_dt(log.timestamp)} | TG:{log.telegram_id}\n   {log.action}" + (f"\n   {log.details}" if log.details else ""))
-    text = "\n\n".join(lines)
-    if len(text) > 4096:
-        text = text[:4000] + "\n... truncated"
-    await message.answer(text, parse_mode="HTML", reply_markup=main_menu(db_user.role))
-# --- Pagination for audit log ---
-from keyboards.pagination import pagination_kb
-
-audit_page_state = {}
-
-@router.message(Command("audit"))
-@router.message(F.text == "🕵️ Audit Log")
-async def cmd_audit(message: Message, state: FSMContext):
-    if not _is_admin(db_user):
-        await message.answer("❌ Admin only.")
-        return
-    await state.update_data(audit_page=1)
+    await state.update_data(audit_page=1, db_user=db_user)
     await show_audit_page(message, 1, state)
 
 async def show_audit_page(message: Message, page: int, state: FSMContext, callback_query: CallbackQuery = None):
-    limit = 10
-    offset = (page - 1) * limit
-    async with AsyncSessionLocal() as session:
-        logs = await get_audit_logs(session, offset=offset, limit=limit)
-        total = await get_audit_logs_count(session)
-    if not logs:
-        text = "No audit logs found."
-    else:
-        lines = ["🕵️ <b>Audit Log</b>\n"]
-        for log in logs:
-            lines.append(f"🔹 {fmt_dt(log.timestamp)} | TG:{log.telegram_id}\n   {log.action}" + (f"\n   {log.details}" if log.details else ""))
-        text = "\n\n".join(lines)
-    total_pages = (total + limit - 1) // limit
-    kb = pagination_kb(page, total_pages, "audit")
-    if callback_query:
-        await callback_query.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
-        await callback_query.answer()
-    else:
-        await message.answer(text, parse_mode="HTML", reply_markup=kb)
-
-@router.callback_query(lambda c: c.data and c.data.startswith("audit_"))
-async def audit_page_callback(callback: CallbackQuery, state: FSMContext):
-    page = int(callback.data.split("_")[1])
-    await show_audit_page(callback.message, page, state, callback_query=callback)
-# --- Pagination for audit log (add these imports at top if missing) ---
-from keyboards.pagination import pagination_kb
-from database.queries import get_audit_logs_count
-
-# Override the existing audit command with pagination
-# Remove any previous definition by redefining it here
-@router.message(Command("audit"))
-@router.message(F.text == "🕵️ Audit Log")
-async def cmd_audit(message: Message, state: FSMContext):
-    if not _is_admin(db_user):
-        await message.answer("❌ Admin only.")
+    data = await state.get_data()
+    db_user = data.get("db_user")
+    if not db_user:
         return
-    await state.update_data(audit_page=1)
-    await show_audit_page(message, 1, state)
-
-async def show_audit_page(message: Message, page: int, state: FSMContext, callback_query: CallbackQuery = None):
     limit = 10
     offset = (page - 1) * limit
     async with AsyncSessionLocal() as session:
