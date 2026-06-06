@@ -128,35 +128,29 @@ async def receive_confirm(message: Message, state: FSMContext, db_user, bot):
     except Exception as e:
         await message.answer(f"❌ Error: {e}", reply_markup=main_menu(db_user.role))
 
-# History with pagination
 @router.message(Command("history"))
 @router.message(F.text == "📜 History")
 async def cmd_history(message: Message, state: FSMContext):
-    # Store pagination state in FSM
-    await state.set_state("history")
-    await state.update_data(page=1, role=None, user_id=None)
+    # Store db_user in state for pagination
+    await state.update_data(page=1, db_user=message.bot.data.get('db_user'))
     await show_history_page(message, 1, state)
 
 async def show_history_page(message: Message, page: int, state: FSMContext, callback_query: CallbackQuery = None):
     data = await state.get_data()
-    role = data.get("role")
-    user_id = data.get("user_id")
-    db_user = data.get("db_user")  # from auth middleware
+    db_user = data.get("db_user")
     if not db_user:
         return
-
     limit = 5
     offset = (page - 1) * limit
-
     async with AsyncSessionLocal() as session:
-        if role == UserRole.STOREKEEPER or (db_user.role == UserRole.STOREKEEPER and not user_id):
+        if db_user.role == UserRole.STOREKEEPER:
             records = await get_receipts(session, user_id=db_user.id, offset=offset, limit=limit)
             total = await get_receipts_count(session, user_id=db_user.id)
             title = "📜 Recent Receipts"
             lines = []
             for r in records:
                 lines.append(f"#{r.id} | {fmt_dt(r.timestamp)}\n   {fmt_kg(r.quantity_kg)} from {r.supplier_name} ({r.truck_number})\n   Stock after: {fmt_kg(r.stock_after)}")
-        elif role == UserRole.OPERATOR or (db_user.role == UserRole.OPERATOR and not user_id):
+        elif db_user.role == UserRole.OPERATOR:
             from database.queries import get_consumptions, get_consumptions_count
             records = await get_consumptions(session, user_id=db_user.id, offset=offset, limit=limit)
             total = await get_consumptions_count(session, user_id=db_user.id)
@@ -165,7 +159,7 @@ async def show_history_page(message: Message, page: int, state: FSMContext, call
             for r in records:
                 m3_str = f" | {r.cubic_meters} m³ @ {r.kg_per_m3} kg/m³" if r.cubic_meters else ""
                 lines.append(f"#{r.id} | {fmt_dt(r.timestamp)}\n   {fmt_kg(r.quantity_kg)}{m3_str}\n   Stock after: {fmt_kg(r.stock_after)}")
-        else:  # admin view
+        else:  # admin
             receipts = await get_receipts(session, offset=offset, limit=limit)
             from database.queries import get_consumptions
             consumptions = await get_consumptions(session, offset=offset, limit=limit)
@@ -180,15 +174,12 @@ async def show_history_page(message: Message, page: int, state: FSMContext, call
             for c in consumptions:
                 m3_str = f" | {c.cubic_meters} m³" if c.cubic_meters else ""
                 lines.append(f"  📤 #{c.id} {fmt_dt(c.timestamp)} | {fmt_kg(c.quantity_kg)}{m3_str}")
-
     if not lines:
         text = "No records found."
     else:
         text = f"{title}\n\n" + "\n".join(lines)
-
     total_pages = (total + limit - 1) // limit
     kb = pagination_kb(page, total_pages, "history")
-
     if callback_query:
         await callback_query.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
         await callback_query.answer()
@@ -199,5 +190,3 @@ async def show_history_page(message: Message, page: int, state: FSMContext, call
 async def history_page_callback(callback: CallbackQuery, state: FSMContext):
     page = int(callback.data.split("_")[1])
     await show_history_page(callback.message, page, state, callback_query=callback)
-
-# The rest of the file (the previous cmd_history function is replaced, but we keep the rest)

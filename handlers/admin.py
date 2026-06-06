@@ -379,3 +379,82 @@ async def cmd_audit(message: Message, db_user):
     if len(text) > 4096:
         text = text[:4000] + "\n... truncated"
     await message.answer(text, parse_mode="HTML", reply_markup=main_menu(db_user.role))
+# --- Pagination for audit log ---
+from keyboards.pagination import pagination_kb
+
+audit_page_state = {}
+
+@router.message(Command("audit"))
+@router.message(F.text == "🕵️ Audit Log")
+async def cmd_audit(message: Message, state: FSMContext):
+    if not _is_admin(db_user):
+        await message.answer("❌ Admin only.")
+        return
+    await state.update_data(audit_page=1)
+    await show_audit_page(message, 1, state)
+
+async def show_audit_page(message: Message, page: int, state: FSMContext, callback_query: CallbackQuery = None):
+    limit = 10
+    offset = (page - 1) * limit
+    async with AsyncSessionLocal() as session:
+        logs = await get_audit_logs(session, offset=offset, limit=limit)
+        total = await get_audit_logs_count(session)
+    if not logs:
+        text = "No audit logs found."
+    else:
+        lines = ["🕵️ <b>Audit Log</b>\n"]
+        for log in logs:
+            lines.append(f"🔹 {fmt_dt(log.timestamp)} | TG:{log.telegram_id}\n   {log.action}" + (f"\n   {log.details}" if log.details else ""))
+        text = "\n\n".join(lines)
+    total_pages = (total + limit - 1) // limit
+    kb = pagination_kb(page, total_pages, "audit")
+    if callback_query:
+        await callback_query.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+        await callback_query.answer()
+    else:
+        await message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+@router.callback_query(lambda c: c.data and c.data.startswith("audit_"))
+async def audit_page_callback(callback: CallbackQuery, state: FSMContext):
+    page = int(callback.data.split("_")[1])
+    await show_audit_page(callback.message, page, state, callback_query=callback)
+# --- Pagination for audit log (add these imports at top if missing) ---
+from keyboards.pagination import pagination_kb
+from database.queries import get_audit_logs_count
+
+# Override the existing audit command with pagination
+# Remove any previous definition by redefining it here
+@router.message(Command("audit"))
+@router.message(F.text == "🕵️ Audit Log")
+async def cmd_audit(message: Message, state: FSMContext):
+    if not _is_admin(db_user):
+        await message.answer("❌ Admin only.")
+        return
+    await state.update_data(audit_page=1)
+    await show_audit_page(message, 1, state)
+
+async def show_audit_page(message: Message, page: int, state: FSMContext, callback_query: CallbackQuery = None):
+    limit = 10
+    offset = (page - 1) * limit
+    async with AsyncSessionLocal() as session:
+        logs = await get_audit_logs(session, offset=offset, limit=limit)
+        total = await get_audit_logs_count(session)
+    if not logs:
+        text = "No audit logs found."
+    else:
+        lines = ["🕵️ <b>Audit Log</b>\n"]
+        for log in logs:
+            lines.append(f"🔹 {fmt_dt(log.timestamp)} | TG:{log.telegram_id}\n   {log.action}" + (f"\n   {log.details}" if log.details else ""))
+        text = "\n\n".join(lines)
+    total_pages = (total + limit - 1) // limit
+    kb = pagination_kb(page, total_pages, "audit")
+    if callback_query:
+        await callback_query.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+        await callback_query.answer()
+    else:
+        await message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+@router.callback_query(lambda c: c.data and c.data.startswith("audit_"))
+async def audit_page_callback(callback: CallbackQuery, state: FSMContext):
+    page = int(callback.data.split("_")[1])
+    await show_audit_page(callback.message, page, state, callback_query=callback)

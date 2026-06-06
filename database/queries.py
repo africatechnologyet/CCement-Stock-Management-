@@ -2,7 +2,6 @@ from datetime import datetime, timedelta
 from typing import Optional, List
 from sqlalchemy import select, func, and_, text, Float, update
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from sqlalchemy.pool import NullPool
 from config import config
 from database.models import Base, User, UserRole, CementReceipt, CementConsumption, StockAdjustment, StockSettings, ManagementRecipient, AuditLog, AdjustmentType
 
@@ -71,7 +70,7 @@ async def get_low_stock_threshold(session):
     v = await get_setting(session, "low_stock_threshold")
     return float(v) if v else config.DEFAULT_LOW_STOCK_KG
 
-# User functions (unchanged)
+# User functions
 async def get_user_by_telegram_id(session, tid):
     return await session.scalar(select(User).where(User.telegram_id == tid))
 
@@ -92,7 +91,7 @@ async def update_user_role(session, tid, role):
     if u: u.role = role; await session.commit(); return True
     return False
 
-# Receipt – with pagination
+# Receipt with pagination count helpers
 async def add_receipt(session, storekeeper_id, supplier_name, truck_number, quantity_kg):
     if quantity_kg <= 0: raise ValueError("Quantity must be positive")
     new_stock = await _update_stock_atomic(session, quantity_kg)
@@ -111,7 +110,7 @@ async def get_receipts_count(session, user_id=None):
         q = q.where(CementReceipt.storekeeper_id == user_id)
     return await session.scalar(q) or 0
 
-# Consumption – with pagination
+# Consumption with pagination count helpers
 async def add_consumption(session, operator_id, quantity_kg, cubic_meters=None, kg_per_m3=None, project_name=None, concrete_grade=None):
     if quantity_kg <= 0: raise ValueError("Quantity must be positive")
     current = await get_current_stock(session)
@@ -132,7 +131,7 @@ async def get_consumptions_count(session, user_id=None):
         q = q.where(CementConsumption.operator_id == user_id)
     return await session.scalar(q) or 0
 
-# Adjustment (unchanged)
+# Adjustment
 async def add_adjustment(session, admin_id, adjustment_type, quantity_kg, reason):
     if quantity_kg <= 0: raise ValueError("Quantity must be positive")
     delta = quantity_kg if adjustment_type == AdjustmentType.ADD else -quantity_kg
@@ -143,7 +142,7 @@ async def add_adjustment(session, admin_id, adjustment_type, quantity_kg, reason
     a = StockAdjustment(admin_id=admin_id, adjustment_type=adjustment_type, quantity_kg=quantity_kg, reason=reason, stock_after=new_stock)
     session.add(a); await session.commit(); await session.refresh(a); return a, new_stock
 
-# Reports (unchanged)
+# Reports
 async def get_daily_summary(session, start_utc, end_utc):
     r = (await session.scalar(select(func.sum(CementReceipt.quantity_kg)).where(and_(CementReceipt.timestamp>=start_utc, CementReceipt.timestamp<end_utc)))) or 0.0
     c = (await session.scalar(select(func.sum(CementConsumption.quantity_kg)).where(and_(CementConsumption.timestamp>=start_utc, CementConsumption.timestamp<end_utc)))) or 0.0
@@ -211,19 +210,3 @@ async def set_last_low_stock_alert(session, dt):
         if row: await session.delete(row); await session.commit()
     else:
         await set_setting(session, "last_low_stock_alert", dt.isoformat())
-
-# Pagination count helpers
-async def get_receipts_count(session, user_id=None) -> int:
-    q = select(func.count(CementReceipt.id))
-    if user_id:
-        q = q.where(CementReceipt.storekeeper_id == user_id)
-    return await session.scalar(q) or 0
-
-async def get_consumptions_count(session, user_id=None) -> int:
-    q = select(func.count(CementConsumption.id))
-    if user_id:
-        q = q.where(CementConsumption.operator_id == user_id)
-    return await session.scalar(q) or 0
-
-async def get_audit_logs_count(session) -> int:
-    return await session.scalar(select(func.count(AuditLog.id))) or 0
