@@ -132,7 +132,7 @@ async def receive_confirm(message: Message, state: FSMContext, db_user, bot):
 @router.message(F.text == "📜 History")
 async def cmd_history(message: Message, state: FSMContext):
     # Store db_user in state for pagination
-    await state.update_data(page=1, db_user=message.bot.data.get('db_user'))
+    await state.update_data(page=1, db_user=db_user)
     await show_history_page(message, 1, state)
 
 async def show_history_page(message: Message, page: int, state: FSMContext, callback_query: CallbackQuery = None):
