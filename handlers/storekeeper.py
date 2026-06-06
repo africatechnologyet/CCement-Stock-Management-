@@ -128,9 +128,10 @@ async def receive_confirm(message: Message, state: FSMContext, db_user, bot):
     except Exception as e:
         await message.answer(f"❌ Error: {e}", reply_markup=main_menu(db_user.role))
 
+# ========== HISTORY WITH PAGINATION (FIXED) ==========
 @router.message(Command("history"))
 @router.message(F.text == "📜 History")
-async def cmd_history(message: Message, state: FSMContext):
+async def cmd_history(message: Message, state: FSMContext, db_user):
     # Store db_user in state for pagination
     await state.update_data(page=1, db_user=db_user)
     await show_history_page(message, 1, state)
