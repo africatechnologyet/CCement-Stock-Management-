@@ -5,6 +5,8 @@ load_dotenv()
 class Config:
     BOT_TOKEN = os.getenv("BOT_TOKEN", "")
     DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///cement_stock.db")
+    DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "5"))
+    DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "10"))
     DEFAULT_LOW_STOCK_KG = float(os.getenv("DEFAULT_LOW_STOCK_KG", "20000"))
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
     TIMEZONE = os.getenv("TIMEZONE", "Africa/Addis_Ababa")
