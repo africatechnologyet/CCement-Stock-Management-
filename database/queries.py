@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
-from typing import Optional, List
+import asyncio
+from typing import Optional
 from sqlalchemy import select, func, and_, text, Float, update
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from config import config
@@ -9,32 +10,29 @@ _db_url = config.DATABASE_URL
 if _db_url.startswith("postgresql://") and "+asyncpg" not in _db_url:
     _db_url = _db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-# Engine with pooling for PostgreSQL, simple for SQLite
 if _db_url.startswith("postgresql+asyncpg://"):
-    engine = create_async_engine(
-        _db_url,
-        echo=False,
-        pool_size=config.DB_POOL_SIZE,
-        max_overflow=config.DB_MAX_OVERFLOW,
-        pool_pre_ping=True,
-    )
+    engine = create_async_engine(_db_url, echo=False, pool_size=config.DB_POOL_SIZE, max_overflow=config.DB_MAX_OVERFLOW, pool_pre_ping=True)
 else:
     engine = create_async_engine(_db_url, echo=False)
 
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
-async def init_db():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    async with AsyncSessionLocal() as session:
-        await _seed_defaults(session)
+async def init_db(retries=5, delay=2):
+    for attempt in range(retries):
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            async with AsyncSessionLocal() as session:
+                await _seed_defaults(session)
+            return
+        except Exception as e:
+            if attempt == retries - 1:
+                raise
+            print(f"DB init failed: {e}, retry in {delay}s")
+            await asyncio.sleep(delay)
 
 async def _seed_defaults(session):
-    defaults = {
-        "low_stock_threshold": str(config.DEFAULT_LOW_STOCK_KG),
-        "current_stock": "0",
-    }
-    for k, v in defaults.items():
+    for k, v in [("low_stock_threshold", str(config.DEFAULT_LOW_STOCK_KG)), ("current_stock", "0")]:
         if not await session.scalar(select(StockSettings).where(StockSettings.key == k)):
             session.add(StockSettings(key=k, value=v))
     await session.commit()
@@ -55,9 +53,7 @@ async def set_setting(session, key, value, updated_by=None):
         except: raise ValueError(f"{key} must be numeric")
     row = await session.scalar(select(StockSettings).where(StockSettings.key == key))
     if row:
-        row.value = value
-        row.updated_at = datetime.utcnow()
-        row.updated_by = updated_by
+        row.value = value; row.updated_at = datetime.utcnow(); row.updated_by = updated_by
     else:
         session.add(StockSettings(key=key, value=value, updated_by=updated_by))
     await session.commit()
@@ -70,7 +66,6 @@ async def get_low_stock_threshold(session):
     v = await get_setting(session, "low_stock_threshold")
     return float(v) if v else config.DEFAULT_LOW_STOCK_KG
 
-# User functions
 async def get_user_by_telegram_id(session, tid):
     return await session.scalar(select(User).where(User.telegram_id == tid))
 
@@ -91,47 +86,40 @@ async def update_user_role(session, tid, role):
     if u: u.role = role; await session.commit(); return True
     return False
 
-# Receipt with pagination count helpers
 async def add_receipt(session, storekeeper_id, supplier_name, truck_number, quantity_kg):
     if quantity_kg <= 0: raise ValueError("Quantity must be positive")
     new_stock = await _update_stock_atomic(session, quantity_kg)
-    r = CementReceipt(storekeeper_id=storekeeper_id, supplier_name=supplier_name, truck_number=truck_number, quantity_kg=quantity_kg, stock_after=new_stock, note=None)
+    r = CementReceipt(storekeeper_id=storekeeper_id, supplier_name=supplier_name, truck_number=truck_number, quantity_kg=quantity_kg, stock_after=new_stock)
     session.add(r); await session.commit(); await session.refresh(r); return r, new_stock
 
 async def get_receipts(session, user_id=None, offset=0, limit=10):
     q = select(CementReceipt).order_by(CementReceipt.timestamp.desc()).offset(offset).limit(limit)
-    if user_id:
-        q = q.where(CementReceipt.storekeeper_id == user_id)
+    if user_id: q = q.where(CementReceipt.storekeeper_id == user_id)
     return (await session.execute(q)).scalars().all()
 
 async def get_receipts_count(session, user_id=None):
     q = select(func.count(CementReceipt.id))
-    if user_id:
-        q = q.where(CementReceipt.storekeeper_id == user_id)
+    if user_id: q = q.where(CementReceipt.storekeeper_id == user_id)
     return await session.scalar(q) or 0
 
-# Consumption with pagination count helpers
 async def add_consumption(session, operator_id, quantity_kg, cubic_meters=None, kg_per_m3=None, project_name=None, concrete_grade=None):
     if quantity_kg <= 0: raise ValueError("Quantity must be positive")
     current = await get_current_stock(session)
     if quantity_kg > current: raise ValueError(f"Insufficient stock. Available: {current:,.0f} kg")
     new_stock = await _update_stock_atomic(session, -quantity_kg)
-    c = CementConsumption(operator_id=operator_id, quantity_kg=quantity_kg, cubic_meters=cubic_meters, kg_per_m3=kg_per_m3, project_name=project_name, concrete_grade=concrete_grade, stock_after=new_stock, note=None)
+    c = CementConsumption(operator_id=operator_id, quantity_kg=quantity_kg, cubic_meters=cubic_meters, kg_per_m3=kg_per_m3, project_name=project_name, concrete_grade=concrete_grade, stock_after=new_stock)
     session.add(c); await session.commit(); await session.refresh(c); return c, new_stock
 
 async def get_consumptions(session, user_id=None, offset=0, limit=10):
     q = select(CementConsumption).order_by(CementConsumption.timestamp.desc()).offset(offset).limit(limit)
-    if user_id:
-        q = q.where(CementConsumption.operator_id == user_id)
+    if user_id: q = q.where(CementConsumption.operator_id == user_id)
     return (await session.execute(q)).scalars().all()
 
 async def get_consumptions_count(session, user_id=None):
     q = select(func.count(CementConsumption.id))
-    if user_id:
-        q = q.where(CementConsumption.operator_id == user_id)
+    if user_id: q = q.where(CementConsumption.operator_id == user_id)
     return await session.scalar(q) or 0
 
-# Adjustment
 async def add_adjustment(session, admin_id, adjustment_type, quantity_kg, reason):
     if quantity_kg <= 0: raise ValueError("Quantity must be positive")
     delta = quantity_kg if adjustment_type == AdjustmentType.ADD else -quantity_kg
@@ -142,7 +130,6 @@ async def add_adjustment(session, admin_id, adjustment_type, quantity_kg, reason
     a = StockAdjustment(admin_id=admin_id, adjustment_type=adjustment_type, quantity_kg=quantity_kg, reason=reason, stock_after=new_stock)
     session.add(a); await session.commit(); await session.refresh(a); return a, new_stock
 
-# Reports
 async def get_daily_summary(session, start_utc, end_utc):
     r = (await session.scalar(select(func.sum(CementReceipt.quantity_kg)).where(and_(CementReceipt.timestamp>=start_utc, CementReceipt.timestamp<end_utc)))) or 0.0
     c = (await session.scalar(select(func.sum(CementConsumption.quantity_kg)).where(and_(CementConsumption.timestamp>=start_utc, CementConsumption.timestamp<end_utc)))) or 0.0
@@ -170,7 +157,6 @@ async def get_monthly_details(session, year, month):
     consumptions = (await session.execute(select(CementConsumption).where(and_(CementConsumption.timestamp>=start, CementConsumption.timestamp<end)).order_by(CementConsumption.timestamp))).scalars().all()
     return {"receipts":receipts, "consumptions":consumptions, "year":year, "month":month}
 
-# Recipients
 async def add_recipient(session, telegram_id, label, is_group=False, added_by=None):
     existing = await session.scalar(select(ManagementRecipient).where(ManagementRecipient.telegram_id == telegram_id))
     if existing: existing.label=label; existing.is_group=is_group; existing.is_active=True; await session.commit(); return existing
@@ -188,7 +174,6 @@ async def remove_recipient(session, telegram_id):
 async def list_recipients(session):
     return (await session.execute(select(ManagementRecipient))).scalars().all()
 
-# Audit log with pagination
 async def add_audit_log(session, telegram_id, action, details=None, user_id=None):
     session.add(AuditLog(user_id=user_id, telegram_id=telegram_id, action=action, details=details))
     await session.commit()
@@ -199,7 +184,6 @@ async def get_audit_logs(session, offset=0, limit=20):
 async def get_audit_logs_count(session):
     return await session.scalar(select(func.count(AuditLog.id))) or 0
 
-# Cooldown
 async def get_last_low_stock_alert(session):
     v = await get_setting(session, "last_low_stock_alert")
     return datetime.fromisoformat(v) if v else None

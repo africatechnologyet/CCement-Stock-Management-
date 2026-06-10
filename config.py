@@ -17,7 +17,7 @@ class Config:
     @classmethod
     def validate(cls):
         if not cls.BOT_TOKEN:
-            raise ValueError("BOT_TOKEN required in .env")
+            raise ValueError("BOT_TOKEN required")
         if cls.ADMIN_TOKEN == "admin_token":
             print("⚠️ WARNING: Using default ADMIN_TOKEN – change in .env")
         if cls.STOREKEEPER_TOKEN == "storekeeper_token":

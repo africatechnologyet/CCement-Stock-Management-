@@ -165,21 +165,6 @@ async def cmd_adjust(message: Message, state: FSMContext, db_user):
     await message.answer("Select adjustment type:", reply_markup=adjustment_type_kb())
 
 @router.message(AdjustStates.adj_type)
-async def adjust_type(message: Message, state: FSMContext, db_user):
-    if message.text.startswith("/") or message.text == "❌ Cancel":
-        await state.clear()
-        await message.answer("🏠 Main Menu", reply_markup=main_menu(db_user.role))
-        return
-    if message.text == "➕ Add Stock":
-        adj_type = AdjustmentType.ADD
-    elif message.text == "➖ Deduct Stock":
-        adj_type = AdjustmentType.DEDUCT
-    else:
-        await message.answer("⚠️ Choose Add or Deduct.")
-        return
-    await state.update_data(adj_type=adj_type.value)
-    await state.set_state(AdjustStates.quantity)
-    await message.answer("Enter <b>Quantity (kg)</b>:", parse_mode="HTML", reply_markup=back_kb())
 async def adjust_type(message: Message, state: FSMContext):
     if message.text == "➕ Add Stock":
         adj_type = AdjustmentType.ADD

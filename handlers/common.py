@@ -11,12 +11,7 @@ from utils.formatters import fmt_kg, fmt_dt, stock_status_text, now_local
 from utils.logger import logger
 
 router = Router()
-
-TOKEN_ROLE_MAP = {
-    config.ADMIN_TOKEN: UserRole.ADMIN,
-    config.STOREKEEPER_TOKEN: UserRole.STOREKEEPER,
-    config.OPERATOR_TOKEN: UserRole.OPERATOR,
-}
+TOKEN_ROLE_MAP = {config.ADMIN_TOKEN: UserRole.ADMIN, config.STOREKEEPER_TOKEN: UserRole.STOREKEEPER, config.OPERATOR_TOKEN: UserRole.OPERATOR}
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext, db_user):
@@ -51,7 +46,7 @@ async def cmd_start(message: Message, state: FSMContext, db_user):
 @router.message(Command("invitelinks"))
 @router.message(F.text == "🔗 Invite Links")
 async def cmd_invite_links(message: Message, db_user):
-    if not db_user or not db_user.is_active or db_user.role != UserRole.ADMIN:
+    if not (db_user and db_user.is_active and db_user.role == UserRole.ADMIN):
         await message.answer("❌ Admin only.")
         return
     bot_info = await message.bot.get_me()

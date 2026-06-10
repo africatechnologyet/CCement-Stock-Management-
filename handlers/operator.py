@@ -39,20 +39,13 @@ async def cmd_consume(message: Message, state: FSMContext, db_user):
 
 @router.message(ConsumeStates.project_name)
 async def consume_project_name(message: Message, state: FSMContext, db_user):
-    if message.text.startswith('/'):
-        await state.clear()
-        await message.answer("❌ Operation cancelled. Use /start to go to main menu.")
-        return
-    if message.text == "❌ Cancel":
+    if message.text.startswith('/') or message.text == "❌ Cancel":
         await state.clear()
         await message.answer("🏠 Main Menu", reply_markup=main_menu(db_user.role))
         return
     await state.update_data(project_name=message.text.strip())
     await state.set_state(ConsumeStates.concrete_grade)
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=g, callback_data=f"grade_{g}") for g in GRADES[i:i+3]]
-        for i in range(0, len(GRADES), 3)
-    ])
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=g, callback_data=f"grade_{g}") for g in GRADES[i:i+3]] for i in range(0, len(GRADES), 3)])
     await message.answer("Step 2/4 — Select <b>Concrete Grade</b>:", parse_mode="HTML", reply_markup=keyboard)
 
 @router.callback_query(lambda c: c.data and c.data.startswith("grade_"))
@@ -64,24 +57,18 @@ async def consume_grade_callback(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text(f"✅ Selected: <b>{grade}</b>\n\nStep 3/4 — Enter <b>Cement per m³ (kg/m³)</b>:", parse_mode="HTML")
         await callback.answer()
     except TelegramBadRequest:
-        # If the callback query is too old, just ignore the answer but still proceed
         pass
     await callback.message.answer("Enter kg/m³:", reply_markup=cancel_kb())
 
 @router.message(ConsumeStates.kg_per_m3)
 async def consume_kg_per_m3(message: Message, state: FSMContext, db_user):
-    if message.text.startswith('/'):
-        await state.clear()
-        await message.answer("❌ Operation cancelled.")
-        return
-    if message.text == "❌ Cancel":
+    if message.text.startswith('/') or message.text == "❌ Cancel":
         await state.clear()
         await message.answer("🏠 Main Menu", reply_markup=main_menu(db_user.role))
         return
     try:
         kg_m3 = float(message.text.strip().replace(",", ""))
-        if kg_m3 <= 0:
-            raise ValueError
+        if kg_m3 <= 0: raise ValueError
     except ValueError:
         await message.answer("⚠️ Invalid value. Enter a positive number (e.g. 350).")
         return
@@ -91,44 +78,36 @@ async def consume_kg_per_m3(message: Message, state: FSMContext, db_user):
 
 @router.message(ConsumeStates.cubic_meters)
 async def consume_cubic_meters(message: Message, state: FSMContext, db_user):
-    if message.text.startswith('/'):
-        await state.clear()
-        await message.answer("❌ Operation cancelled.")
-        return
-    if message.text == "❌ Cancel":
+    if message.text.startswith('/') or message.text == "❌ Cancel":
         await state.clear()
         await message.answer("🏠 Main Menu", reply_markup=main_menu(db_user.role))
         return
     if message.text == "🔙 Back":
         await state.set_state(ConsumeStates.kg_per_m3)
-        await message.answer("Step 3/4 — Enter <b>Cement per m³ (kg/m³)</b>:", parse_mode="HTML", reply_markup=cancel_kb())
+        await message.answer("Step 3/4 — Enter kg/m³:", reply_markup=cancel_kb())
         return
     try:
         m3 = float(message.text.strip().replace(",", ""))
-        if m3 <= 0:
-            raise ValueError
+        if m3 <= 0: raise ValueError
     except ValueError:
         await message.answer("⚠️ Invalid value. Enter a positive number (e.g. 120).")
         return
     data = await state.get_data()
     kg_per_m3 = data.get("kg_per_m3", 0)
     if kg_per_m3 <= 0:
-        await message.answer("❌ Invalid kg/m³. Please restart the process.")
+        await message.answer("❌ Invalid kg/m³. Please restart.")
         await state.clear()
         return
     total_kg = m3 * kg_per_m3
     await state.update_data(cubic_meters=m3, total_kg=total_kg)
     await state.set_state(ConsumeStates.confirm)
-    await message.answer(
-        f"📋 <b>Confirm Consumption</b>\n━━━━━━━━━━━━━━━━━━━━━━\n🏗️ Project:      <b>{data.get('project_name', 'N/A')}</b>\n📊 Grade:        <b>{data.get('concrete_grade', 'N/A')}</b>\n📐 m³ Done:      <b>{m3} m³</b>\n⚖️  kg/m³:        <b>{kg_per_m3} kg/m³</b>\n🧱 Total Used:   <b>{fmt_kg(total_kg)}</b>\n━━━━━━━━━━━━━━━━━━━━━━\nConfirm?",
-        parse_mode="HTML", reply_markup=confirm_kb()
-    )
+    await message.answer(f"📋 <b>Confirm Consumption</b>\n━━━━━━━━━━━━━━━━━━━━━━\n🏗️ Project:      <b>{data.get('project_name', 'N/A')}</b>\n📊 Grade:        <b>{data.get('concrete_grade', 'N/A')}</b>\n📐 m³ Done:      <b>{m3} m³</b>\n⚖️  kg/m³:        <b>{kg_per_m3} kg/m³</b>\n🧱 Total Used:   <b>{fmt_kg(total_kg)}</b>\n━━━━━━━━━━━━━━━━━━━━━━\nConfirm?", parse_mode="HTML", reply_markup=confirm_kb())
 
 @router.message(ConsumeStates.confirm)
 async def consume_confirm(message: Message, state: FSMContext, db_user, bot):
     if message.text == "🔙 Back":
         await state.set_state(ConsumeStates.cubic_meters)
-        await message.answer("Step 4/4 — Enter <b>m³ Done</b>:", parse_mode="HTML", reply_markup=back_kb())
+        await message.answer("Step 4/4 — Enter m³:", reply_markup=back_kb())
         return
     if message.text != "✅ Confirm":
         await state.clear()
