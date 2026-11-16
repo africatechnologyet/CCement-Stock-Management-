@@ -118,7 +118,7 @@ async def consume_cubic_meters(message: Message, state: FSMContext, db_user):
 async def consume_confirm(message: Message, state: FSMContext, db_user, bot):
     if message.text == "🔙 Back":
         await state.set_state(ConsumeStates.cubic_meters)
-        await message.answer("Step 4/4 — Enter m³:", reply_markup=back_kb())
+        await message.answer("Enter concrete volume in m³:", reply_markup=back_kb())
         return
     if message.text != "✅ Confirm":
         await state.clear()
