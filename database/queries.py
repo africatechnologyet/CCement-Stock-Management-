@@ -143,6 +143,16 @@ async def add_external_trip_consumption(
             stock_row = await session.scalar(
                 select(StockSettings).where(StockSettings.key == "current_stock").with_for_update()
             )
+            # Recheck after taking the stock-row lock: concurrent retries for the
+            # same trip serialize here, so the second request becomes a no-op.
+            existing = await session.scalar(
+                select(CementConsumption).where(
+                    CementConsumption.source_system == source_system,
+                    CementConsumption.source_trip_id == source_trip_id
+                )
+            )
+            if existing:
+                return existing, None, True
             if stock_row is None:
                 raise ValueError("Cement stock setting is not initialized.")
             current_stock = float(stock_row.value)
