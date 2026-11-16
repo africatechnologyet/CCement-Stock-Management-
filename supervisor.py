@@ -64,15 +64,19 @@ def wait_for_cement_tables(timeout_seconds=90):
     deadline = time.monotonic() + timeout_seconds
     last_error = None
     while time.monotonic() < deadline and not stopping:
+        conn = None
         try:
-            with psycopg2.connect(database_dsn(), connect_timeout=5) as conn:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT to_regclass('public.consumption')")
-                    if cur.fetchone()[0]:
-                        LOG.info("Cement tables are initialized.")
-                        return
+            conn = psycopg2.connect(database_dsn(), connect_timeout=5)
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_regclass('public.consumption')")
+                if cur.fetchone()[0]:
+                    LOG.info("Cement tables are initialized.")
+                    return
         except Exception as exc:
             last_error = exc
+        finally:
+            if conn is not None:
+                conn.close()
         time.sleep(2)
     raise RuntimeError(f"Cement database tables did not initialize in time: {last_error}")
 
@@ -80,9 +84,16 @@ def wait_for_cement_tables(timeout_seconds=90):
 def apply_development_migration():
     migration = ROOT / "migrations" / "dev" / "001_add_external_consumption_reference.sql"
     sql = migration.read_text(encoding="utf-8")
-    with psycopg2.connect(database_dsn(), connect_timeout=10) as conn:
+    conn = psycopg2.connect(database_dsn(), connect_timeout=10)
+    try:
         with conn.cursor() as cur:
             cur.execute(sql)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
     LOG.info("External consumption reference migration applied.")
 
 
