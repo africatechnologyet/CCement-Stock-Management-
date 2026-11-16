@@ -1,10 +1,11 @@
 from datetime import datetime, timedelta
+import hashlib
 import asyncio
 from typing import Optional
 from sqlalchemy import select, func, and_, text, Float, update
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from config import config
-from database.models import Base, User, UserRole, CementReceipt, CementConsumption, StockAdjustment, StockSettings, ManagementRecipient, AuditLog, AdjustmentType, CementGradeFactor
+from database.models import Base, User, UserRole, CementReceipt, CementConsumption, StockAdjustment, StockSettings, ManagementRecipient, AuditLog, AdjustmentType, CementGradeFactor, InviteToken
 
 _db_url = config.DATABASE_URL
 if _db_url.startswith("postgresql://") and "+asyncpg" not in _db_url:
@@ -312,3 +313,33 @@ async def set_last_low_stock_alert(session, dt):
         if row: await session.delete(row); await session.commit()
     else:
         await set_setting(session, "last_low_stock_alert", dt.isoformat())
+
+
+# ========== ROLE INVITATIONS ==========
+def _invite_digest(token):
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+async def create_invite(session, token, role, created_by, expires_at):
+    invite = InviteToken(token_hash=_invite_digest(token), role=role, created_by=created_by, expires_at=expires_at)
+    session.add(invite)
+    await session.commit()
+    return invite
+
+async def redeem_invite(session, token, telegram_id, full_name, username=None):
+    """Atomically redeem one valid invitation and register its Telegram user."""
+    async with session.begin():
+        invite = await session.scalar(
+            select(InviteToken).where(InviteToken.token_hash == _invite_digest(token)).with_for_update()
+        )
+        now = datetime.utcnow()
+        if invite is None or invite.revoked_at is not None or invite.used_at is not None or invite.expires_at <= now:
+            return None, "invalid"
+        existing = await get_user_by_telegram_id(session, telegram_id)
+        if existing is not None:
+            return None, "registered"
+        user = User(telegram_id=telegram_id, full_name=full_name, username=username, role=invite.role, created_by=invite.created_by)
+        session.add(user)
+        invite.used_by = telegram_id
+        invite.used_at = now
+        await session.flush()
+        return invite.role, "ok"
