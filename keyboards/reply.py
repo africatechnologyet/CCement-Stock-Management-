@@ -10,10 +10,10 @@ def main_menu(role: UserRole) -> ReplyKeyboardMarkup:
             [KeyboardButton(text="📥 Receive")],
             [KeyboardButton(text="⚙️ Adjust Stock"), KeyboardButton(text="🔔 Set Min Level")],
             [KeyboardButton(text="🧱 Cement Factors"), KeyboardButton(text="✏️ Set Cement Factor")],
-            [KeyboardButton(text="👥 Users"), KeyboardButton(text="📋 Recipients")],
+            [KeyboardButton(text="👥 Users"), KeyboardButton(text="🔄 Change User Role")],\n            [KeyboardButton(text="🗑️ Remove User"), KeyboardButton(text="📋 Recipients")],
             [KeyboardButton(text="📊 Daily Report"), KeyboardButton(text="📈 Monthly Report")],
             [KeyboardButton(text="🕵️ Audit Log"), KeyboardButton(text="📜 History")],
-            [KeyboardButton(text="🔗 Invite Links"), KeyboardButton(text="🗑️ Remove Recipient")],
+            [KeyboardButton(text="🔗 Create Invite Link"), KeyboardButton(text="🗑️ Remove Recipient")],
         ]
     elif role == UserRole.STOREKEEPER:
         buttons = base + [[KeyboardButton(text="📥 Receive")], [KeyboardButton(text="📜 History")]]
