@@ -3,6 +3,8 @@ Admin-only handlers: /adduser, /users, /adjust, /set_low_stock,
 /add_recipient, /recipients, /del_recipient, /audit
 """
 import re
+import secrets
+from datetime import datetime, timedelta
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -26,6 +28,7 @@ from database.queries import (
     get_audit_logs_count,
     get_active_cement_factors,
     set_cement_grade_factor,
+    update_user_role, deactivate_user, create_invite,
 )
 from keyboards.reply import (
     main_menu, cancel_kb, adjustment_type_kb, back_kb, back_confirm_kb,
@@ -562,3 +565,138 @@ async def cement_factor_value(message: Message, state: FSMContext, db_user):
             f"❌ Could not save factor: {str(exc)}",
             reply_markup=main_menu(db_user.role)
         )
+
+
+# ========== USER MANAGEMENT: CHANGE ROLE / REMOVE / INVITE ==========
+class ChangeRoleStates(StatesGroup):
+    telegram_id = State()
+    role = State()
+    confirm = State()
+
+class RemoveUserStates(StatesGroup):
+    telegram_id = State()
+    confirm = State()
+
+class InviteUserStates(StatesGroup):
+    role = State()
+
+@router.message(Command("change_role"))
+@router.message(F.text == "🔄 Change User Role")
+async def cmd_change_role(message: Message, state: FSMContext, db_user):
+    if not _is_admin(db_user):
+        await message.answer("❌ Admin only.")
+        return
+    await state.clear()
+    await state.set_state(ChangeRoleStates.telegram_id)
+    await message.answer("Enter the Telegram ID of the user whose role you want to change:", reply_markup=cancel_kb())
+
+@router.message(ChangeRoleStates.telegram_id)
+async def change_role_id(message: Message, state: FSMContext, db_user):
+    if message.text in ("❌ Cancel", "🔙 Back"):
+        await state.clear(); await message.answer("Cancelled.", reply_markup=main_menu(db_user.role)); return
+    try:
+        tid = int(message.text.strip())
+    except (ValueError, AttributeError):
+        await message.answer("⚠️ Enter a valid numeric Telegram ID."); return
+    if tid == message.from_user.id:
+        await message.answer("⚠️ You cannot change your own administrator role here."); return
+    async with AsyncSessionLocal() as session:
+        target = await get_user_by_telegram_id(session, tid)
+    if target is None:
+        await message.answer("❌ User not found."); return
+    await state.update_data(target_id=tid, target_name=target.full_name, old_role=target.role.value)
+    await state.set_state(ChangeRoleStates.role)
+    await message.answer(f"User: {target.full_name}\nCurrent role: {target.role.value.title()}\nSelect the new role:", reply_markup=role_selection_kb())
+
+@router.message(ChangeRoleStates.role)
+async def change_role_select(message: Message, state: FSMContext, db_user):
+    if message.text == "❌ Cancel":
+        await state.clear(); await message.answer("Cancelled.", reply_markup=main_menu(db_user.role)); return
+    role = ROLE_MAP.get(message.text)
+    if role is None:
+        await message.answer("⚠️ Choose a role using the buttons."); return
+    data = await state.get_data()
+    if data.get("old_role") == role.value:
+        await state.clear(); await message.answer("That user already has this role.", reply_markup=main_menu(db_user.role)); return
+    if data.get("old_role") == UserRole.ADMIN.value and role != UserRole.ADMIN:
+        async with AsyncSessionLocal() as session:
+            active_admins = [u for u in await get_all_users(session) if u.is_active and u.role == UserRole.ADMIN]
+        if len(active_admins) <= 1:
+            await message.answer("⚠️ The last active admin cannot be demoted."); return
+    await state.update_data(new_role=role.value)
+    await state.set_state(ChangeRoleStates.confirm)
+    await message.answer(f"Confirm role change?\n{data['target_name']}: {data['old_role'].title()} → {role.value.title()}\n\nReply ✅ Confirm to apply.", reply_markup=back_confirm_kb())
+
+@router.message(ChangeRoleStates.confirm)
+async def change_role_confirm(message: Message, state: FSMContext, db_user):
+    if message.text != "✅ Confirm":
+        await state.clear(); await message.answer("Cancelled.", reply_markup=main_menu(db_user.role)); return
+    data = await state.get_data(); await state.clear()
+    role = UserRole(data["new_role"])
+    async with AsyncSessionLocal() as session:
+        ok = await update_user_role(session, data["target_id"], role)
+        if ok: await add_audit_log(session, message.from_user.id, "USER_ROLE_CHANGED", f"User {data['target_id']}: {data['old_role']} -> {role.value}", user_id=db_user.id)
+    await message.answer("✅ User role updated." if ok else "❌ User not found.", reply_markup=main_menu(db_user.role))
+
+@router.message(Command("remove_user"))
+@router.message(F.text == "🗑️ Remove User")
+async def cmd_remove_user(message: Message, state: FSMContext, db_user):
+    if not _is_admin(db_user):
+        await message.answer("❌ Admin only."); return
+    await state.clear(); await state.set_state(RemoveUserStates.telegram_id)
+    await message.answer("Enter the Telegram ID of the user to remove access:", reply_markup=cancel_kb())
+
+@router.message(RemoveUserStates.telegram_id)
+async def remove_user_id(message: Message, state: FSMContext, db_user):
+    if message.text in ("❌ Cancel", "🔙 Back"):
+        await state.clear(); await message.answer("Cancelled.", reply_markup=main_menu(db_user.role)); return
+    try: tid = int(message.text.strip())
+    except (ValueError, AttributeError):
+        await message.answer("⚠️ Enter a valid numeric Telegram ID."); return
+    if tid == message.from_user.id:
+        await message.answer("⚠️ You cannot remove your own access."); return
+    async with AsyncSessionLocal() as session:
+        target = await get_user_by_telegram_id(session, tid)
+        users = await get_all_users(session)
+    if target is None or not target.is_active:
+        await message.answer("❌ Active user not found."); return
+    if target.role == UserRole.ADMIN and sum(1 for u in users if u.is_active and u.role == UserRole.ADMIN) <= 1:
+        await message.answer("⚠️ The last active admin cannot be removed."); return
+    await state.update_data(target_id=tid, target_name=target.full_name)
+    await state.set_state(RemoveUserStates.confirm)
+    await message.answer(f"⚠️ Remove access for {target.full_name} (ID: {tid})?\nTheir account history will be retained.\n\nReply ✅ Confirm to deactivate.", reply_markup=back_confirm_kb())
+
+@router.message(RemoveUserStates.confirm)
+async def remove_user_confirm(message: Message, state: FSMContext, db_user):
+    if message.text != "✅ Confirm":
+        await state.clear(); await message.answer("Cancelled.", reply_markup=main_menu(db_user.role)); return
+    data = await state.get_data(); await state.clear()
+    async with AsyncSessionLocal() as session:
+        ok = await deactivate_user(session, data["target_id"])
+        if ok: await add_audit_log(session, message.from_user.id, "USER_DEACTIVATED", f"Deactivated {data['target_name']} ({data['target_id']})", user_id=db_user.id)
+    await message.answer("✅ User access removed. Historical records retained." if ok else "❌ User not found.", reply_markup=main_menu(db_user.role))
+
+@router.message(Command("create_invite"))
+@router.message(F.text == "🔗 Create Invite Link")
+async def cmd_create_invite(message: Message, state: FSMContext, db_user):
+    if not _is_admin(db_user):
+        await message.answer("❌ Admin only."); return
+    await state.clear(); await state.set_state(InviteUserStates.role)
+    await message.answer("Select the role for this invitation. The link can be used once and expires after 24 hours.", reply_markup=role_selection_kb())
+
+@router.message(InviteUserStates.role)
+async def create_invite_role(message: Message, state: FSMContext, db_user):
+    if message.text == "❌ Cancel":
+        await state.clear(); await message.answer("Cancelled.", reply_markup=main_menu(db_user.role)); return
+    role = ROLE_MAP.get(message.text)
+    if role is None:
+        await message.answer("⚠️ Choose a role using the buttons."); return
+    token = secrets.token_urlsafe(24)
+    expires = datetime.utcnow() + timedelta(hours=24)
+    async with AsyncSessionLocal() as session:
+        await create_invite(session, token, role, message.from_user.id, expires)
+        await add_audit_log(session, message.from_user.id, "INVITE_CREATED", f"Created one-time {role.value} invite; expires in 24h", user_id=db_user.id)
+    bot_info = await message.bot.get_me()
+    link = f"https://t.me/{bot_info.username}?start={token}"
+    await state.clear()
+    await message.answer(f"🔗 <b>{role.value.title()} invitation</b>\n\n<code>{link}</code>\n\n⏳ Expires in 24 hours. One use only. Share privately.", parse_mode="HTML", reply_markup=main_menu(db_user.role))
