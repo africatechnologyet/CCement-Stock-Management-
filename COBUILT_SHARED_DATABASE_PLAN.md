@@ -45,3 +45,14 @@ The two bot frameworks have different event-loop lifecycles. Do not call PTB run
 - Whether trip creation should be rejected when stock is insufficient, or saved in an explicitly pending state. Default safe behavior: reject/rollback the trip and deduction together.
 - Exact backup, restore, and data reconciliation procedure for the two Render PostgreSQL instances.
 - Final supervised worker implementation and health-check strategy.
+
+
+## Admin-managed cement factor configuration (approved requirement)
+- Do not require the business owner to provide a fixed factor table before development can continue.
+- Provide an admin-only configuration flow inside the bot interface for maintaining cement consumption factors by concrete grade (kg of cement per m3).
+- Only authorized active administrators may view, add, edit, activate, or deactivate grade factors. Ordinary operators must not be able to change them.
+- Validate grade and numeric factor input; reject blank, zero, negative, non-numeric, or implausible values and show the unit clearly (kg/m3). Do not silently apply a default or guessed factor.
+- Record an audit entry for every change: Telegram admin ID, grade, previous value, new value, and timestamp.
+- Preserve factor history/versioning. Each trip must snapshot the factor and calculated cement quantity used at the time it is recorded; later edits must never recalculate historical trips or ledger entries.
+- If a grade has no active factor, block automatic deduction for that grade and clearly tell the operator/admin that the factor must first be configured. Do not silently create a zero deduction.
+- Keep automatic deductions disabled in development until an administrator has configured and confirmed the factors. Test the configuration flow with sample development data only.
