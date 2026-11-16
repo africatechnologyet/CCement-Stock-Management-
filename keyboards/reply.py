@@ -9,6 +9,7 @@ def main_menu(role: UserRole) -> ReplyKeyboardMarkup:
         buttons = base + [
             [KeyboardButton(text="📥 Receive"), KeyboardButton(text="📤 Consume")],
             [KeyboardButton(text="⚙️ Adjust Stock"), KeyboardButton(text="🔔 Set Min Level")],
+            [KeyboardButton(text="🧱 Cement Factors")],
             [KeyboardButton(text="👥 Users"), KeyboardButton(text="📋 Recipients")],
             [KeyboardButton(text="📊 Daily Report"), KeyboardButton(text="📈 Monthly Report")],
             [KeyboardButton(text="🕵️ Audit Log"), KeyboardButton(text="📜 History")],
