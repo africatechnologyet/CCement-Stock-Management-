@@ -56,3 +56,12 @@ The two bot frameworks have different event-loop lifecycles. Do not call PTB run
 - Preserve factor history/versioning. Each trip must snapshot the factor and calculated cement quantity used at the time it is recorded; later edits must never recalculate historical trips or ledger entries.
 - If a grade has no active factor, block automatic deduction for that grade and clearly tell the operator/admin that the factor must first be configured. Do not silently create a zero deduction.
 - Keep automatic deductions disabled in development until an administrator has configured and confirmed the factors. Test the configuration flow with sample development data only.
+
+
+## Development progress — admin-managed cement factors
+- Added a versioned `cement_grade_factors` table to the Cement Stock SQLAlchemy model. Updating a grade deactivates the prior version and inserts a new version; history is retained.
+- Added admin-only menu actions to view configured factors and set/update a factor through a guided Telegram conversation (grade, then kg/m³).
+- Each factor change is recorded in the existing audit log with the administrator Telegram ID and old/new values.
+- Manual Cement Stock consumption now uses the configured active factor for the selected grade. If no factor is configured, the operator is told to ask an administrator; no guessed or zero factor is applied.
+- This work is committed only to `cobuilt-integration-dev`. It has not been deployed or run against a production database.
+- Remaining: test the bot in an isolated development environment; add source-trip idempotency and factor snapshots to consumption records; implement the atomic shared-database trip/stock transaction; build and test the supervised two-bot runtime.
