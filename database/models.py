@@ -95,3 +95,14 @@ class AuditLog(Base):
     details = Column(Text)
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
     user = relationship("User", back_populates="audit_logs")
+
+
+class CementGradeFactor(Base):
+    """Versioned grade-to-cement factor; inactive rows are retained as history."""
+    __tablename__ = "cement_grade_factors"
+    id = Column(Integer, primary_key=True)
+    concrete_grade = Column(String(20), nullable=False, index=True)
+    kg_per_m3 = Column(Float, nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    created_by = Column(BigInteger, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
