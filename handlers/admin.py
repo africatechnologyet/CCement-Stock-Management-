@@ -480,6 +480,7 @@ async def cmd_cement_factors(message: Message, state: FSMContext, db_user):
     )
 
 @router.message(Command("set_factor"))
+@router.message(F.text == "✏️ Set Cement Factor")
 async def cmd_set_factor(message: Message, state: FSMContext, db_user):
     if not _is_admin(db_user):
         await message.answer("❌ Admin only.")
