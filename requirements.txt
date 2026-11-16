@@ -6,3 +6,8 @@ alembic==1.14.0
 python-dotenv==1.0.1
 pytz==2024.2
 openpyxl==3.1.5
+
+# Concrete Logistics bot dependencies
+python-telegram-bot==21.9
+psycopg2-binary
+requests==2.31.0
