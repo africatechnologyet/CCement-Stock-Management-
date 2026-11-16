@@ -3,7 +3,6 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 from sqlalchemy import select
-from config import config
 from database.models import UserRole, User
 from database.queries import AsyncSessionLocal, create_user, get_current_stock, get_low_stock_threshold, add_audit_log, redeem_invite
 from keyboards.reply import main_menu, REMOVE_KB
@@ -11,7 +10,6 @@ from utils.formatters import fmt_kg, fmt_dt, stock_status_text, now_local
 from utils.logger import logger
 
 router = Router()
-TOKEN_ROLE_MAP = {config.ADMIN_TOKEN: UserRole.ADMIN, config.STOREKEEPER_TOKEN: UserRole.STOREKEEPER, config.OPERATOR_TOKEN: UserRole.OPERATOR}
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext, db_user):
@@ -40,7 +38,7 @@ async def cmd_start(message: Message, state: FSMContext, db_user):
                 user = await session.scalar(select(User).where(User.telegram_id == message.from_user.id))
                 await add_audit_log(session, message.from_user.id, "REGISTERED_VIA_INVITE_LINK", f"Registered as {role.value}", user.id if user else None)
         if status == "ok":
-            await message.answer(f"👋 Welcome, {message.from_user.full_name}!\\n\\n✅ You are registered as {role.value.title()}.", parse_mode="HTML", reply_markup=main_menu(role))
+            await message.answer(f"👋 Welcome, {message.from_user.full_name}!\n\n✅ You are registered as {role.value.title()}.", parse_mode="HTML", reply_markup=main_menu(role))
             return
         if status == "registered":
             await message.answer("⚠️ Your Telegram account is already registered. Ask an administrator to restore or change your access.")
