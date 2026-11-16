@@ -75,3 +75,7 @@ The two bot frameworks have different event-loop lifecycles. Do not call PTB run
 - Concrete submissions use the Telegram message ID with user ID as an idempotency key in the dedicated schema, preventing the same Telegram update from creating a second trip/deduction on retry.
 - Both bot processes still retain their own Telegram token and handler stack. This code does not combine polling loops.
 - Development only: do not set the integration flag or point either live service at the shared database. The shared Oregon development database, schema migrations, supervisor, and runtime tests are not yet provisioned/completed.
+
+
+### Status clarification (supersedes earlier remaining-work bullets)
+The development branch now contains the first opt-in atomic trip/stock implementation and Telegram-update idempotency key. These are code changes only and have not been executed against a development PostgreSQL database. Outstanding work is to provision the isolated Oregon database, apply/verify the Cement migration, configure a development-only pair of bot tokens and user mappings, run automated transaction/concurrency tests, and implement/test the supervised two-process Render runtime. The integration flag must remain false until those checks pass.
