@@ -4,7 +4,7 @@ from typing import Optional
 from sqlalchemy import select, func, and_, text, Float, update
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from config import config
-from database.models import Base, User, UserRole, CementReceipt, CementConsumption, StockAdjustment, StockSettings, ManagementRecipient, AuditLog, AdjustmentType
+from database.models import Base, User, UserRole, CementReceipt, CementConsumption, StockAdjustment, StockSettings, ManagementRecipient, AuditLog, AdjustmentType, CementGradeFactor
 
 _db_url = config.DATABASE_URL
 if _db_url.startswith("postgresql://") and "+asyncpg" not in _db_url:
@@ -129,6 +129,43 @@ async def add_adjustment(session, admin_id, adjustment_type, quantity_kg, reason
     new_stock = await _update_stock_atomic(session, delta)
     a = StockAdjustment(admin_id=admin_id, adjustment_type=adjustment_type, quantity_kg=quantity_kg, reason=reason, stock_after=new_stock)
     session.add(a); await session.commit(); await session.refresh(a); return a, new_stock
+
+
+async def get_active_cement_factors(session):
+    stmt = select(CementGradeFactor).where(CementGradeFactor.is_active == True).order_by(CementGradeFactor.concrete_grade)
+    return (await session.execute(stmt)).scalars().all()
+
+async def get_active_cement_factor(session, concrete_grade):
+    stmt = select(CementGradeFactor).where(
+        CementGradeFactor.concrete_grade == concrete_grade.upper(),
+        CementGradeFactor.is_active == True
+    ).order_by(CementGradeFactor.created_at.desc(), CementGradeFactor.id.desc())
+    return await session.scalar(stmt)
+
+async def set_cement_grade_factor(session, concrete_grade, kg_per_m3, admin_telegram_id):
+    grade = concrete_grade.strip().upper()
+    if not grade or not grade.startswith("C") or not grade[1:].isdigit():
+        raise ValueError("Enter a valid grade such as C25.")
+    if not isinstance(kg_per_m3, (int, float)) or not 0 < kg_per_m3 <= 2000:
+        raise ValueError("Factor must be a positive number no greater than 2,000 kg/m3.")
+    # Serialize edits for a grade on PostgreSQL; SQLite development remains functional.
+    if session.bind and session.bind.dialect.name == "postgresql":
+        await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:grade))"), {"grade": grade})
+    previous = await get_active_cement_factor(session, grade)
+    old_value = previous.kg_per_m3 if previous else None
+    if previous:
+        previous.is_active = False
+    current = CementGradeFactor(
+        concrete_grade=grade,
+        kg_per_m3=float(kg_per_m3),
+        is_active=True,
+        created_by=admin_telegram_id
+    )
+    session.add(current)
+    await session.flush()
+    await session.commit()
+    await session.refresh(current)
+    return old_value, current
 
 async def get_daily_summary(session, start_utc, end_utc):
     r = (await session.scalar(select(func.sum(CementReceipt.quantity_kg)).where(and_(CementReceipt.timestamp>=start_utc, CementReceipt.timestamp<end_utc)))) or 0.0
