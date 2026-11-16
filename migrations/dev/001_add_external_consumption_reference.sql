@@ -6,7 +6,8 @@ BEGIN;
 
 ALTER TABLE consumption
     ADD COLUMN IF NOT EXISTS source_system VARCHAR(50),
-    ADD COLUMN IF NOT EXISTS source_trip_id BIGINT;
+    ADD COLUMN IF NOT EXISTS source_trip_id BIGINT,
+    ADD COLUMN IF NOT EXISTS factor_version_id INTEGER;
 
 DO $$
 BEGIN
@@ -32,6 +33,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_consumption_external_source_trip
 
 COMMENT ON COLUMN consumption.source_system IS
     'Originating application for automated consumption; NULL for existing/manual records.';
+COMMENT ON COLUMN consumption.factor_version_id IS
+    'Version of the admin-managed cement grade factor snapshotted for this consumption.';
 COMMENT ON COLUMN consumption.source_trip_id IS
     'Unique originating trip identifier; NULL for existing/manual records.';
 
