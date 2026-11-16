@@ -1,12 +1,16 @@
-cat > render.yaml << 'EOF'
 services:
   - type: worker
-    name: cement-bot
+    name: cobuilt-integrated-worker-dev
     runtime: python
+    region: oregon
     buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
+    startCommand: python supervisor.py
     envVars:
       - key: BOT_TOKEN
+        sync: false
+      - key: CEMENT_BOT_TOKEN
+        sync: false
+      - key: DATABASE_URL
         sync: false
       - key: ADMIN_TOKEN
         sync: false
@@ -14,10 +18,7 @@ services:
         sync: false
       - key: OPERATOR_TOKEN
         sync: false
-      - key: DATABASE_URL
-        value: sqlite+aiosqlite:///data/cement_stock.db
-    disks:
-      - name: bot-data
-        mountPath: /data
-        sizeGB: 1
-EOF
+      - key: DEFAULT_LOW_STOCK_KG
+        value: "20000"
+      - key: TIMEZONE
+        value: Africa/Addis_Ababa
