@@ -65,3 +65,13 @@ The two bot frameworks have different event-loop lifecycles. Do not call PTB run
 - Manual Cement Stock consumption now uses the configured active factor for the selected grade. If no factor is configured, the operator is told to ask an administrator; no guessed or zero factor is applied.
 - This work is committed only to `cobuilt-integration-dev`. It has not been deployed or run against a production database.
 - Remaining: test the bot in an isolated development environment; add source-trip idempotency and factor snapshots to consumption records; implement the atomic shared-database trip/stock transaction; build and test the supervised two-bot runtime.
+
+
+## Development progress — atomic trip/stock transaction
+- Concrete development code now supports an explicit opt-in integration flag: `COBUILT_CEMENT_INTEGRATION_ENABLED=true`. It remains disabled by default.
+- Integrated mode requires a dedicated Concrete schema (`DB_SCHEMA=concrete_logistics`) and a separate Cement schema (`CEMENT_SCHEMA=public`). Concrete's connection search path is restricted to its own schema so the two applications' `users` tables cannot collide.
+- When enabled, a Concrete trip insert, Cement stock-row lock/update, and Cement consumption-ledger insert execute on the same PostgreSQL connection and transaction. If the factor is missing, the Concrete user is not registered in Cement Stock, or stock is insufficient, the whole transaction rolls back and the trip is not saved.
+- The Cement factor version ID and exact kg/m3 value are snapshotted in the consumption row. A unique source reference is recorded as `source_system='concrete-bot'` plus the Concrete trip ID.
+- Concrete submissions use the Telegram message ID with user ID as an idempotency key in the dedicated schema, preventing the same Telegram update from creating a second trip/deduction on retry.
+- Both bot processes still retain their own Telegram token and handler stack. This code does not combine polling loops.
+- Development only: do not set the integration flag or point either live service at the shared database. The shared Oregon development database, schema migrations, supervisor, and runtime tests are not yet provisioned/completed.
