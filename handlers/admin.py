@@ -24,6 +24,8 @@ from database.queries import (
     get_audit_logs,
     add_audit_log,
     get_audit_logs_count,
+    get_active_cement_factors,
+    set_cement_grade_factor,
 )
 from keyboards.reply import (
     main_menu, cancel_kb, adjustment_type_kb, back_kb, back_confirm_kb,
@@ -448,3 +450,114 @@ async def show_audit_page(message: Message, page: int, state: FSMContext, callba
 async def audit_page_callback(callback: CallbackQuery, state: FSMContext):
     page = int(callback.data.split("_")[1])
     await show_audit_page(callback.message, page, state, callback_query=callback)
+
+
+# ========== CEMENT GRADE FACTORS ==========
+class CementFactorStates(StatesGroup):
+    grade = State()
+    factor = State()
+
+@router.message(Command("cement_factors"))
+@router.message(F.text == "🧱 Cement Factors")
+async def cmd_cement_factors(message: Message, state: FSMContext, db_user):
+    if not _is_admin(db_user):
+        await message.answer("❌ Admin only.")
+        return
+    await state.clear()
+    async with AsyncSessionLocal() as session:
+        factors = await get_active_cement_factors(session)
+    if factors:
+        lines = [f"• <b>{f.concrete_grade}</b>: {f.kg_per_m3:g} kg/m³" for f in factors]
+        body = "\n".join(lines)
+    else:
+        body = "No factors configured yet."
+    await message.answer(
+        "🧱 <b>Cement Consumption Factors</b>\n\n"
+        + body
+        + "\n\nUse /set_factor to add or update a grade factor.",
+        parse_mode="HTML",
+        reply_markup=main_menu(db_user.role)
+    )
+
+@router.message(Command("set_factor"))
+async def cmd_set_factor(message: Message, state: FSMContext, db_user):
+    if not _is_admin(db_user):
+        await message.answer("❌ Admin only.")
+        return
+    await state.clear()
+    await state.set_state(CementFactorStates.grade)
+    await message.answer(
+        "Enter the concrete grade (for example C25).\n"
+        "Only an active administrator can change these values.",
+        reply_markup=cancel_kb()
+    )
+
+@router.message(CementFactorStates.grade)
+async def cement_factor_grade(message: Message, state: FSMContext, db_user):
+    if not _is_admin(db_user):
+        await state.clear()
+        await message.answer("❌ Admin only.")
+        return
+    if message.text in ("❌ Cancel", "🔙 Back"):
+        await state.clear()
+        await message.answer("Cancelled.", reply_markup=main_menu(db_user.role))
+        return
+    grade = message.text.strip().upper()
+    if not grade.startswith("C") or not grade[1:].isdigit():
+        await message.answer("⚠️ Enter a grade such as C25.")
+        return
+    await state.update_data(grade=grade)
+    await state.set_state(CementFactorStates.factor)
+    await message.answer(
+        f"Enter cement factor for <b>{grade}</b> in kg/m³.\n"
+        "Use the approved mix-design value. Enter a positive number.",
+        parse_mode="HTML",
+        reply_markup=cancel_kb()
+    )
+
+@router.message(CementFactorStates.factor)
+async def cement_factor_value(message: Message, state: FSMContext, db_user):
+    if not _is_admin(db_user):
+        await state.clear()
+        await message.answer("❌ Admin only.")
+        return
+    if message.text in ("❌ Cancel", "🔙 Back"):
+        await state.clear()
+        await message.answer("Cancelled.", reply_markup=main_menu(db_user.role))
+        return
+    try:
+        factor = float(message.text.strip().replace(",", ""))
+        if not 0 < factor <= 2000:
+            raise ValueError
+    except ValueError:
+        await message.answer("⚠️ Enter a positive numeric value up to 2,000 kg/m³.")
+        return
+    data = await state.get_data()
+    await state.clear()
+    try:
+        async with AsyncSessionLocal() as session:
+            old_value, current = await set_cement_grade_factor(
+                session, data["grade"], factor, message.from_user.id
+            )
+            previous_label = f"{old_value:g} kg/m³" if old_value is not None else "not configured"
+            await add_audit_log(
+                session,
+                message.from_user.id,
+                "CEMENT_FACTOR_UPDATED",
+                f"{data['grade']}: {previous_label} -> {factor:g} kg/m³",
+                user_id=db_user.id
+            )
+        await message.answer(
+            f"✅ <b>{data['grade']} factor saved.</b>\n"
+            f"Previous: {previous_label}\n"
+            f"Current: <b>{factor:g} kg/m³</b>\n\n"
+            "This change applies to future linked trips only. Historical records are not recalculated.",
+            parse_mode="HTML",
+            reply_markup=main_menu(db_user.role)
+        )
+    except Exception as exc:
+        logger.exception("Could not save cement grade factor")
+        await message.answer(
+            f"❌ Could not save factor: {str(exc)}",
+            reply_markup=main_menu(db_user.role)
+        )
