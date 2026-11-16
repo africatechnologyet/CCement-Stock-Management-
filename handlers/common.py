@@ -49,16 +49,6 @@ async def cmd_start(message: Message, state: FSMContext, db_user):
         return
     await message.answer("👋 Welcome to the Cement Stock Bot.\n\nYou are not registered. Please ask an administrator for an invite link.", parse_mode="HTML")
 
-@router.message(Command("invitelinks"))
-@router.message(F.text == "🔗 Invite Links")
-async def cmd_invite_links(message: Message, db_user):
-    if not (db_user and db_user.is_active and db_user.role == UserRole.ADMIN):
-        await message.answer("❌ Admin only.")
-        return
-    bot_info = await message.bot.get_me()
-    username = bot_info.username
-    await message.answer(f"🔗 <b>Invite Links</b>\n\n👑 Admin:\n<code>https://t.me/{username}?start={config.ADMIN_TOKEN}</code>\n\n🏪 Storekeeper:\n<code>https://t.me/{username}?start={config.STOREKEEPER_TOKEN}</code>\n\n⚙️ Operator:\n<code>https://t.me/{username}?start={config.OPERATOR_TOKEN}</code>\n\n⚠️ Keep them private.", parse_mode="HTML", reply_markup=main_menu(db_user.role))
-
 @router.message(Command("stock"))
 @router.message(F.text == "📦 Stock Status")
 async def cmd_stock(message: Message, db_user):
