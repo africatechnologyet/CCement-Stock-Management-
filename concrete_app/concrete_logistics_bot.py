@@ -23,7 +23,7 @@ from telegram.ext import (
 # CONFIG
 # ─────────────────────────────────────────────
 BOT_TOKEN     = os.environ["BOT_TOKEN"]
-DATABASE_URL  = os.environ["DATABASE_URL"]
+DATABASE_URL  = os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://", 1)
 BOT_USERNAME  = "MaterialConcretebot"
 ADMIN_SECRET  = "Admin"
 WORKER_SECRET = "Worker"
