@@ -5,7 +5,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.exceptions import TelegramBadRequest
 from database.models import UserRole
-from database.queries import AsyncSessionLocal, add_consumption, get_current_stock, add_audit_log
+from database.queries import AsyncSessionLocal, add_consumption, get_current_stock, add_audit_log, calculate_cement_quantity
 from keyboards.reply import main_menu, cancel_kb, back_kb, confirm_kb
 from utils.alerts import check_and_send_low_stock_alert
 from utils.formatters import fmt_kg
@@ -51,14 +51,25 @@ async def consume_project_name(message: Message, state: FSMContext, db_user):
 @router.callback_query(lambda c: c.data and c.data.startswith("grade_"))
 async def consume_grade_callback(callback: CallbackQuery, state: FSMContext):
     grade = callback.data.split("_")[1]
-    await state.update_data(concrete_grade=grade)
-    await state.set_state(ConsumeStates.kg_per_m3)
     try:
-        await callback.message.edit_text(f"✅ Selected: <b>{grade}</b>\n\nStep 3/4 — Enter <b>Cement per m³ (kg/m³)</b>:", parse_mode="HTML")
+        async with AsyncSessionLocal() as session:
+            factor, _ = await calculate_cement_quantity(session, grade, 1.0)
+    except ValueError:
+        await callback.answer(f"No approved factor is configured for {grade}. Ask an administrator to set it.", show_alert=True)
+        return
+    await state.update_data(concrete_grade=grade, kg_per_m3=factor)
+    await state.set_state(ConsumeStates.cubic_meters)
+    try:
+        await callback.message.edit_text(
+            f"✅ Selected: <b>{grade}</b>\n"
+            f"⚖️ Approved factor: <b>{factor:g} kg/m³</b>\n\n"
+            "Step 3/3 — Enter <b>Concrete volume (m³)</b>:",
+            parse_mode="HTML"
+        )
         await callback.answer()
     except TelegramBadRequest:
         pass
-    await callback.message.answer("Enter kg/m³:", reply_markup=cancel_kb())
+    await callback.message.answer("Enter concrete volume in m³:", reply_markup=back_kb())
 
 @router.message(ConsumeStates.kg_per_m3)
 async def consume_kg_per_m3(message: Message, state: FSMContext, db_user):
@@ -83,8 +94,8 @@ async def consume_cubic_meters(message: Message, state: FSMContext, db_user):
         await message.answer("🏠 Main Menu", reply_markup=main_menu(db_user.role))
         return
     if message.text == "🔙 Back":
-        await state.set_state(ConsumeStates.kg_per_m3)
-        await message.answer("Step 3/4 — Enter kg/m³:", reply_markup=cancel_kb())
+        await state.set_state(ConsumeStates.concrete_grade)
+        await message.answer("Select concrete grade again:", reply_markup=cancel_kb())
         return
     try:
         m3 = float(message.text.strip().replace(",", ""))
