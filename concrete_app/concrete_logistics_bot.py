@@ -876,7 +876,7 @@ async def conv_trip_volume(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     except Exception as exc:
         log.exception("Trip save / cement deduction failed")
         await update.message.reply_text(
-            f"❌ Trip was not saved. No cement was deducted.\\n\\n{exc}\\n\\n"
+            f"❌ Trip was not saved. No cement was deducted.\n\n{exc}\n\n"
             "Please resolve the issue and submit the volume again.",
             reply_markup=kb_back()
         )
