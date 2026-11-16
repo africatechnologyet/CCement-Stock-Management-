@@ -112,3 +112,17 @@ class CementGradeFactor(Base):
 
 
 Index('uq_consumption_external_source_trip', CementConsumption.source_system, CementConsumption.source_trip_id, unique=True, postgresql_where=(CementConsumption.source_system.isnot(None) & CementConsumption.source_trip_id.isnot(None)))
+
+
+class InviteToken(Base):
+    """Single-use, expiring role invitation for bot registration."""
+    __tablename__ = "invite_tokens"
+    id = Column(Integer, primary_key=True)
+    token_hash = Column(String(64), unique=True, nullable=False, index=True)
+    role = Column(Enum(UserRole), nullable=False)
+    created_by = Column(BigInteger, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    used_by = Column(BigInteger)
+    used_at = Column(DateTime)
+    revoked_at = Column(DateTime)
