@@ -60,10 +60,12 @@ def start_child(label, script, env):
     return proc
 
 
-def wait_for_cement_tables(timeout_seconds=90):
+def wait_for_cement_tables(cement_process, timeout_seconds=90):
     deadline = time.monotonic() + timeout_seconds
     last_error = None
     while time.monotonic() < deadline and not stopping:
+        if cement_process.poll() is not None:
+            raise RuntimeError(f"Cement Stock bot exited during database initialization with status {cement_process.returncode}.")
         conn = None
         try:
             conn = psycopg2.connect(database_dsn(), connect_timeout=5)
@@ -118,7 +120,7 @@ def main():
 
     cement = start_child("Cement Stock bot", "bot.py", env)
     try:
-        wait_for_cement_tables()
+        wait_for_cement_tables(cement)
         if stopping:
             return
         apply_development_migration()
