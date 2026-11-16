@@ -110,6 +110,68 @@ async def add_consumption(session, operator_id, quantity_kg, cubic_meters=None, 
     c = CementConsumption(operator_id=operator_id, quantity_kg=quantity_kg, cubic_meters=cubic_meters, kg_per_m3=kg_per_m3, project_name=project_name, concrete_grade=concrete_grade, stock_after=new_stock)
     session.add(c); await session.commit(); await session.refresh(c); return c, new_stock
 
+
+async def add_external_trip_consumption(
+    session, source_system, source_trip_id, telegram_user_id,
+    project_name, concrete_grade, cubic_meters
+):
+    """Atomically deduct stock and create one idempotent source-linked ledger row."""
+    if not source_system or len(source_system) > 50:
+        raise ValueError("Invalid source system.")
+    if not isinstance(source_trip_id, int) or source_trip_id <= 0:
+        raise ValueError("Invalid source trip ID.")
+    if not isinstance(cubic_meters, (int, float)) or cubic_meters <= 0:
+        raise ValueError("Concrete volume must be positive.")
+    grade = concrete_grade.strip().upper()
+    try:
+        async with session.begin():
+            existing = await session.scalar(
+                select(CementConsumption).where(
+                    CementConsumption.source_system == source_system,
+                    CementConsumption.source_trip_id == source_trip_id
+                )
+            )
+            if existing:
+                return existing, None, True
+            factor = await get_active_cement_factor(session, grade)
+            if factor is None:
+                raise ValueError(f"No active cement factor is configured for {grade}.")
+            operator = await get_user_by_telegram_id(session, telegram_user_id)
+            if operator is None or not operator.is_active:
+                raise ValueError("The Concrete Bot user is not registered as an active Cement Stock user.")
+            quantity = float(cubic_meters) * float(factor.kg_per_m3)
+            stock_row = await session.scalar(
+                select(StockSettings).where(StockSettings.key == "current_stock").with_for_update()
+            )
+            if stock_row is None:
+                raise ValueError("Cement stock setting is not initialized.")
+            current_stock = float(stock_row.value)
+            if quantity > current_stock:
+                raise ValueError(f"Insufficient cement stock. Available: {current_stock:,.2f} kg; required: {quantity:,.2f} kg.")
+            new_stock = current_stock - quantity
+            stock_row.value = str(new_stock)
+            stock_row.updated_at = datetime.utcnow()
+            record = CementConsumption(
+                operator_id=operator.id,
+                quantity_kg=quantity,
+                cubic_meters=float(cubic_meters),
+                kg_per_m3=float(factor.kg_per_m3),
+                project_name=project_name,
+                concrete_grade=grade,
+                stock_after=new_stock,
+                note=f"Automatic deduction from {source_system} trip #{source_trip_id}",
+                source_system=source_system,
+                source_trip_id=source_trip_id,
+                factor_version_id=factor.id
+            )
+            session.add(record)
+            await session.flush()
+        await session.refresh(record)
+        return record, new_stock, False
+    except Exception:
+        await session.rollback()
+        raise
+
 async def get_consumptions(session, user_id=None, offset=0, limit=10):
     q = select(CementConsumption).order_by(CementConsumption.timestamp.desc()).offset(offset).limit(limit)
     if user_id: q = q.where(CementConsumption.operator_id == user_id)
