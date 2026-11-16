@@ -142,6 +142,15 @@ async def get_active_cement_factor(session, concrete_grade):
     ).order_by(CementGradeFactor.created_at.desc(), CementGradeFactor.id.desc())
     return await session.scalar(stmt)
 
+
+async def calculate_cement_quantity(session, concrete_grade, cubic_meters):
+    if not isinstance(cubic_meters, (int, float)) or cubic_meters <= 0:
+        raise ValueError("Concrete volume must be positive.")
+    factor = await get_active_cement_factor(session, concrete_grade)
+    if factor is None:
+        raise ValueError(f"No active cement factor is configured for {concrete_grade}. Ask an administrator to configure it.")
+    return float(factor.kg_per_m3), float(cubic_meters) * float(factor.kg_per_m3)
+
 async def set_cement_grade_factor(session, concrete_grade, kg_per_m3, admin_telegram_id):
     grade = concrete_grade.strip().upper()
     if not grade or not grade.startswith("C") or not grade[1:].isdigit():
