@@ -5,7 +5,7 @@ from aiogram.types import Message
 from sqlalchemy import select
 from config import config
 from database.models import UserRole, User
-from database.queries import AsyncSessionLocal, create_user, get_current_stock, get_low_stock_threshold, add_audit_log
+from database.queries import AsyncSessionLocal, create_user, get_current_stock, get_low_stock_threshold, add_audit_log, redeem_invite
 from keyboards.reply import main_menu, REMOVE_KB
 from utils.formatters import fmt_kg, fmt_dt, stock_status_text, now_local
 from utils.logger import logger
@@ -33,13 +33,19 @@ async def cmd_start(message: Message, state: FSMContext, db_user):
         await message.answer(f"👋 Welcome, {message.from_user.full_name}!\n\n✅ You are registered as the first Admin.\n\nUse /adduser to add more users.", parse_mode="HTML", reply_markup=main_menu(UserRole.ADMIN))
         logger.info(f"First admin auto-registered: {message.from_user.id}")
         return
-    if token and token in TOKEN_ROLE_MAP:
-        role = TOKEN_ROLE_MAP[token]
+    if token:
         async with AsyncSessionLocal() as session:
-            user = await create_user(session, message.from_user.id, message.from_user.full_name, role, message.from_user.username)
-            await add_audit_log(session, message.from_user.id, "REGISTERED_VIA_INVITE_LINK", f"Registered as {role.value}", user.id)
-        await message.answer(f"👋 Welcome, {message.from_user.full_name}!\n\n✅ You are registered as {role.value.title()}.", parse_mode="HTML", reply_markup=main_menu(role))
-        logger.info(f"User {message.from_user.id} registered as {role.value}")
+            role, status = await redeem_invite(session, token, message.from_user.id, message.from_user.full_name, message.from_user.username)
+            if status == "ok":
+                user = await session.scalar(select(User).where(User.telegram_id == message.from_user.id))
+                await add_audit_log(session, message.from_user.id, "REGISTERED_VIA_INVITE_LINK", f"Registered as {role.value}", user.id if user else None)
+        if status == "ok":
+            await message.answer(f"👋 Welcome, {message.from_user.full_name}!\\n\\n✅ You are registered as {role.value.title()}.", parse_mode="HTML", reply_markup=main_menu(role))
+            return
+        if status == "registered":
+            await message.answer("⚠️ Your Telegram account is already registered. Ask an administrator to restore or change your access.")
+            return
+        await message.answer("❌ This invitation is invalid, expired, or already used. Ask an administrator for a new link.")
         return
     await message.answer("👋 Welcome to the Cement Stock Bot.\n\nYou are not registered. Please ask an administrator for an invite link.", parse_mode="HTML")
 
