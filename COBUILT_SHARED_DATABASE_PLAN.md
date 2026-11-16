@@ -79,3 +79,14 @@ The two bot frameworks have different event-loop lifecycles. Do not call PTB run
 
 ### Status clarification (supersedes earlier remaining-work bullets)
 The development branch now contains the first opt-in atomic trip/stock implementation and Telegram-update idempotency key. These are code changes only and have not been executed against a development PostgreSQL database. Outstanding work is to provision the isolated Oregon database, apply/verify the Cement migration, configure a development-only pair of bot tokens and user mappings, run automated transaction/concurrency tests, and implement/test the supervised two-process Render runtime. The integration flag must remain false until those checks pass.
+
+
+## Combined development worker milestone
+- The Cement Stock development repository now contains a vendored snapshot of Concrete Logistics at `concrete_app/concrete_logistics_bot.py`, plus `supervisor.py`. The supervisor starts Cement Stock first, waits for its tables, applies the additive development-only consumption-reference migration, then starts Concrete Logistics. If either bot exits unexpectedly, the supervisor stops the other so Render can restart the worker as a unit.
+- The two bot processes retain separate tokens: `BOT_TOKEN` for Concrete Logistics and `CEMENT_BOT_TOKEN` for Cement Stock. Cement config supports the dedicated token while retaining the old `BOT_TOKEN` fallback for standalone use.
+- The shared Render blueprint is now an Oregon development Background Worker named `cobuilt-integrated-worker-dev`. It uses one `DATABASE_URL`, with Cement tables in `public` and Concrete tables in `concrete_logistics`.
+- Concrete's PostgreSQL URL is normalized for psycopg2 when the shared URL uses SQLAlchemy's `postgresql+asyncpg://` form.
+- Integrated mode hides and blocks destructive trip-report deletion, preserving the trip-to-consumption audit trail. Webhook cleanup no longer discards queued Telegram updates.
+- A GitHub Actions development workflow was added for Python compilation and dependency consistency checks. No successful run is confirmed yet.
+- All work remains on `cobuilt-integration-dev`. The new worker blueprint has not been deployed or connected to any database. Do not point it at either production database.
+- Still required before any trial: create a separate Oregon development PostgreSQL database; configure its URL and two development-only bot tokens in a new Render worker; verify the supervisor starts both processes; run transaction, duplicate, insufficient-stock, factor-history, permissions, and shutdown tests. The Concrete source is vendored into the Cement integration repository, so future code changes must be synchronized deliberately.
