@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parent
 LOG = logging.getLogger("cobuilt.supervisor")
 children = []
 stopping = False
+LOCK_KEY = 0x434F4255494C54  # Stable PostgreSQL advisory-lock key for this worker.
 
 
 def database_dsn():
@@ -47,6 +48,27 @@ def handle_signal(signum, _frame):
     stopping = True
     LOG.info("Received signal %s; stopping both bots", signum)
     stop_children()
+
+
+def acquire_singleton_lock():
+    """Ensure overlapping Render deploys never run two polling supervisors."""
+    conn = psycopg2.connect(database_dsn(), connect_timeout=10)
+    conn.autocommit = True
+    while not stopping:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_try_advisory_lock(%s)", (LOCK_KEY,))
+                acquired = cur.fetchone()[0]
+            if acquired:
+                LOG.info("Acquired the CoBuilt worker singleton lock.")
+                return conn
+        except Exception:
+            conn.close()
+            raise
+        LOG.warning("Another CoBuilt worker still holds the singleton lock; waiting before starting Telegram bots.")
+        time.sleep(3)
+    conn.close()
+    return None
 
 
 def start_child(label, script, env):
@@ -118,8 +140,11 @@ def main():
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
 
-    cement = start_child("Cement Stock bot", "bot.py", env)
+    lock_conn = acquire_singleton_lock()
+    if lock_conn is None:
+        return
     try:
+        cement = start_child("Cement Stock bot", "bot.py", env)
         wait_for_cement_tables(cement)
         if stopping:
             return
@@ -140,6 +165,7 @@ def main():
             time.sleep(2)
     finally:
         stop_children()
+        lock_conn.close()
 
 
 if __name__ == "__main__":
