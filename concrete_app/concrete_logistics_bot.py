@@ -634,6 +634,9 @@ async def conv_truck_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return ASK_NEW_TRUCK
 
 async def conv_truck_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("🚫 Admin access was removed. This operation was cancelled.")
+        return ConversationHandler.END
     plate=update.message.text.strip().upper()
     ok=add_truck(plate)
     msg=f"✅ Truck `{plate}` added!" if ok else f"⚠️ `{plate}` already exists."
@@ -657,6 +660,9 @@ async def conv_job_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return ASK_NEW_JOB_NAME
 
 async def conv_job_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("🚫 Admin access was removed. This operation was cancelled.")
+        return ConversationHandler.END
     name=update.message.text.strip()
     add_job(name)
     await update.message.reply_text(f"✅ *Job '{name}' added!*",parse_mode="Markdown",
