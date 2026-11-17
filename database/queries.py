@@ -1,10 +1,11 @@
 from datetime import datetime, timedelta
+import hashlib
 import asyncio
 from typing import Optional
 from sqlalchemy import select, func, and_, text, Float, update
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from config import config
-from database.models import Base, User, UserRole, CementReceipt, CementConsumption, StockAdjustment, StockSettings, ManagementRecipient, AuditLog, AdjustmentType
+from database.models import Base, User, UserRole, CementReceipt, CementConsumption, StockAdjustment, StockSettings, ManagementRecipient, AuditLog, AdjustmentType, CementGradeFactor, InviteToken
 
 _db_url = config.DATABASE_URL
 if _db_url.startswith("postgresql://") and "+asyncpg" not in _db_url:
@@ -110,6 +111,78 @@ async def add_consumption(session, operator_id, quantity_kg, cubic_meters=None, 
     c = CementConsumption(operator_id=operator_id, quantity_kg=quantity_kg, cubic_meters=cubic_meters, kg_per_m3=kg_per_m3, project_name=project_name, concrete_grade=concrete_grade, stock_after=new_stock)
     session.add(c); await session.commit(); await session.refresh(c); return c, new_stock
 
+
+async def add_external_trip_consumption(
+    session, source_system, source_trip_id, telegram_user_id,
+    project_name, concrete_grade, cubic_meters
+):
+    """Atomically deduct stock and create one idempotent source-linked ledger row."""
+    if not source_system or len(source_system) > 50:
+        raise ValueError("Invalid source system.")
+    if not isinstance(source_trip_id, int) or source_trip_id <= 0:
+        raise ValueError("Invalid source trip ID.")
+    if not isinstance(cubic_meters, (int, float)) or cubic_meters <= 0:
+        raise ValueError("Concrete volume must be positive.")
+    grade = concrete_grade.strip().upper()
+    try:
+        async with session.begin():
+            existing = await session.scalar(
+                select(CementConsumption).where(
+                    CementConsumption.source_system == source_system,
+                    CementConsumption.source_trip_id == source_trip_id
+                )
+            )
+            if existing:
+                return existing, None, True
+            factor = await get_active_cement_factor(session, grade)
+            if factor is None:
+                raise ValueError(f"No active cement factor is configured for {grade}.")
+            operator = await get_user_by_telegram_id(session, telegram_user_id)
+            if operator is None or not operator.is_active:
+                raise ValueError("The Concrete Bot user is not registered as an active Cement Stock user.")
+            quantity = float(cubic_meters) * float(factor.kg_per_m3)
+            stock_row = await session.scalar(
+                select(StockSettings).where(StockSettings.key == "current_stock").with_for_update()
+            )
+            # Recheck after taking the stock-row lock: concurrent retries for the
+            # same trip serialize here, so the second request becomes a no-op.
+            existing = await session.scalar(
+                select(CementConsumption).where(
+                    CementConsumption.source_system == source_system,
+                    CementConsumption.source_trip_id == source_trip_id
+                )
+            )
+            if existing:
+                return existing, None, True
+            if stock_row is None:
+                raise ValueError("Cement stock setting is not initialized.")
+            current_stock = float(stock_row.value)
+            if quantity > current_stock:
+                raise ValueError(f"Insufficient cement stock. Available: {current_stock:,.2f} kg; required: {quantity:,.2f} kg.")
+            new_stock = current_stock - quantity
+            stock_row.value = str(new_stock)
+            stock_row.updated_at = datetime.utcnow()
+            record = CementConsumption(
+                operator_id=operator.id,
+                quantity_kg=quantity,
+                cubic_meters=float(cubic_meters),
+                kg_per_m3=float(factor.kg_per_m3),
+                project_name=project_name,
+                concrete_grade=grade,
+                stock_after=new_stock,
+                note=f"Automatic deduction from {source_system} trip #{source_trip_id}",
+                source_system=source_system,
+                source_trip_id=source_trip_id,
+                factor_version_id=factor.id
+            )
+            session.add(record)
+            await session.flush()
+        await session.refresh(record)
+        return record, new_stock, False
+    except Exception:
+        await session.rollback()
+        raise
+
 async def get_consumptions(session, user_id=None, offset=0, limit=10):
     q = select(CementConsumption).order_by(CementConsumption.timestamp.desc()).offset(offset).limit(limit)
     if user_id: q = q.where(CementConsumption.operator_id == user_id)
@@ -129,6 +202,52 @@ async def add_adjustment(session, admin_id, adjustment_type, quantity_kg, reason
     new_stock = await _update_stock_atomic(session, delta)
     a = StockAdjustment(admin_id=admin_id, adjustment_type=adjustment_type, quantity_kg=quantity_kg, reason=reason, stock_after=new_stock)
     session.add(a); await session.commit(); await session.refresh(a); return a, new_stock
+
+
+async def get_active_cement_factors(session):
+    stmt = select(CementGradeFactor).where(CementGradeFactor.is_active == True).order_by(CementGradeFactor.concrete_grade)
+    return (await session.execute(stmt)).scalars().all()
+
+async def get_active_cement_factor(session, concrete_grade):
+    stmt = select(CementGradeFactor).where(
+        CementGradeFactor.concrete_grade == concrete_grade.upper(),
+        CementGradeFactor.is_active == True
+    ).order_by(CementGradeFactor.created_at.desc(), CementGradeFactor.id.desc())
+    return await session.scalar(stmt)
+
+
+async def calculate_cement_quantity(session, concrete_grade, cubic_meters):
+    if not isinstance(cubic_meters, (int, float)) or cubic_meters <= 0:
+        raise ValueError("Concrete volume must be positive.")
+    factor = await get_active_cement_factor(session, concrete_grade)
+    if factor is None:
+        raise ValueError(f"No active cement factor is configured for {concrete_grade}. Ask an administrator to configure it.")
+    return float(factor.kg_per_m3), float(cubic_meters) * float(factor.kg_per_m3)
+
+async def set_cement_grade_factor(session, concrete_grade, kg_per_m3, admin_telegram_id):
+    grade = concrete_grade.strip().upper()
+    if not grade or not grade.startswith("C") or not grade[1:].isdigit():
+        raise ValueError("Enter a valid grade such as C25.")
+    if not isinstance(kg_per_m3, (int, float)) or not 0 < kg_per_m3 <= 2000:
+        raise ValueError("Factor must be a positive number no greater than 2,000 kg/m3.")
+    # Serialize edits for a grade on PostgreSQL; SQLite development remains functional.
+    if session.bind and session.bind.dialect.name == "postgresql":
+        await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:grade))"), {"grade": grade})
+    previous = await get_active_cement_factor(session, grade)
+    old_value = previous.kg_per_m3 if previous else None
+    if previous:
+        previous.is_active = False
+    current = CementGradeFactor(
+        concrete_grade=grade,
+        kg_per_m3=float(kg_per_m3),
+        is_active=True,
+        created_by=admin_telegram_id
+    )
+    session.add(current)
+    await session.flush()
+    await session.commit()
+    await session.refresh(current)
+    return old_value, current
 
 async def get_daily_summary(session, start_utc, end_utc):
     r = (await session.scalar(select(func.sum(CementReceipt.quantity_kg)).where(and_(CementReceipt.timestamp>=start_utc, CementReceipt.timestamp<end_utc)))) or 0.0
@@ -194,3 +313,33 @@ async def set_last_low_stock_alert(session, dt):
         if row: await session.delete(row); await session.commit()
     else:
         await set_setting(session, "last_low_stock_alert", dt.isoformat())
+
+
+# ========== ROLE INVITATIONS ==========
+def _invite_digest(token):
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+async def create_invite(session, token, role, created_by, expires_at):
+    invite = InviteToken(token_hash=_invite_digest(token), role=role, created_by=created_by, expires_at=expires_at)
+    session.add(invite)
+    await session.commit()
+    return invite
+
+async def redeem_invite(session, token, telegram_id, full_name, username=None):
+    """Atomically redeem one valid invitation and register its Telegram user."""
+    async with session.begin():
+        invite = await session.scalar(
+            select(InviteToken).where(InviteToken.token_hash == _invite_digest(token)).with_for_update()
+        )
+        now = datetime.utcnow()
+        if invite is None or invite.revoked_at is not None or invite.used_at is not None or invite.expires_at <= now:
+            return None, "invalid"
+        existing = await get_user_by_telegram_id(session, telegram_id)
+        if existing is not None:
+            return None, "registered"
+        user = User(telegram_id=telegram_id, full_name=full_name, username=username, role=invite.role, created_by=invite.created_by)
+        session.add(user)
+        invite.used_by = telegram_id
+        invite.used_at = now
+        await session.flush()
+        return invite.role, "ok"

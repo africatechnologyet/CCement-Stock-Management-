@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum as PyEnum
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, Enum, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, Enum, Float, ForeignKey, Integer, String, Text, Index
 from sqlalchemy.orm import DeclarativeBase, relationship
 
 class Base(DeclarativeBase):
@@ -54,6 +54,9 @@ class CementConsumption(Base):
     concrete_grade = Column(String(20))
     stock_after = Column(Float, nullable=False)
     note = Column(Text)
+    source_system = Column(String(50), nullable=True)
+    source_trip_id = Column(BigInteger, nullable=True)
+    factor_version_id = Column(Integer, nullable=True)
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
     operator = relationship("User", back_populates="consumptions")
 
@@ -95,3 +98,31 @@ class AuditLog(Base):
     details = Column(Text)
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
     user = relationship("User", back_populates="audit_logs")
+
+
+class CementGradeFactor(Base):
+    """Versioned grade-to-cement factor; inactive rows are retained as history."""
+    __tablename__ = "cement_grade_factors"
+    id = Column(Integer, primary_key=True)
+    concrete_grade = Column(String(20), nullable=False, index=True)
+    kg_per_m3 = Column(Float, nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    created_by = Column(BigInteger, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+Index('uq_consumption_external_source_trip', CementConsumption.source_system, CementConsumption.source_trip_id, unique=True, postgresql_where=(CementConsumption.source_system.isnot(None) & CementConsumption.source_trip_id.isnot(None)))
+
+
+class InviteToken(Base):
+    """Single-use, expiring role invitation for bot registration."""
+    __tablename__ = "invite_tokens"
+    id = Column(Integer, primary_key=True)
+    token_hash = Column(String(64), unique=True, nullable=False, index=True)
+    role = Column(Enum(UserRole), nullable=False)
+    created_by = Column(BigInteger, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    used_by = Column(BigInteger)
+    used_at = Column(DateTime)
+    revoked_at = Column(DateTime)

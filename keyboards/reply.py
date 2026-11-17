@@ -7,17 +7,19 @@ def main_menu(role: UserRole) -> ReplyKeyboardMarkup:
     base = [[KeyboardButton(text="📦 Stock Status")]]
     if role == UserRole.ADMIN:
         buttons = base + [
-            [KeyboardButton(text="📥 Receive"), KeyboardButton(text="📤 Consume")],
+            [KeyboardButton(text="📥 Receive")],
             [KeyboardButton(text="⚙️ Adjust Stock"), KeyboardButton(text="🔔 Set Min Level")],
-            [KeyboardButton(text="👥 Users"), KeyboardButton(text="📋 Recipients")],
+            [KeyboardButton(text="🧱 Cement Factors"), KeyboardButton(text="✏️ Set Cement Factor")],
+            [KeyboardButton(text="👥 Users"), KeyboardButton(text="🔄 Change User Role")],
+            [KeyboardButton(text="🗑️ Remove User"), KeyboardButton(text="📋 Recipients")],
             [KeyboardButton(text="📊 Daily Report"), KeyboardButton(text="📈 Monthly Report")],
             [KeyboardButton(text="🕵️ Audit Log"), KeyboardButton(text="📜 History")],
-            [KeyboardButton(text="🔗 Invite Links"), KeyboardButton(text="🗑️ Remove Recipient")],
+            [KeyboardButton(text="🔗 Create Invite Link"), KeyboardButton(text="🗑️ Remove Recipient")],
         ]
     elif role == UserRole.STOREKEEPER:
         buttons = base + [[KeyboardButton(text="📥 Receive")], [KeyboardButton(text="📜 History")]]
     elif role == UserRole.OPERATOR:
-        buttons = base + [[KeyboardButton(text="📤 Consume")], [KeyboardButton(text="📜 History")]]
+        buttons = base + [[KeyboardButton(text="📜 History")]]
     elif role == UserRole.MANAGEMENT:
         buttons = base + [[KeyboardButton(text="📊 Daily Report"), KeyboardButton(text="📈 Monthly Report")]]
     else:
