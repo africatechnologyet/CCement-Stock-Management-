@@ -144,12 +144,6 @@ def main():
                         role TEXT NOT NULL DEFAULT 'worker',
                         joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                     );
-                    CREATE TABLE "{SCHEMA}"._legacy_users_archive (
-                        user_id BIGINT PRIMARY KEY,
-                        username TEXT,
-                        role TEXT NOT NULL,
-                        joined_at TIMESTAMPTZ NOT NULL
-                    );
                     CREATE TABLE "{SCHEMA}".jobs (
                         id SERIAL PRIMARY KEY,
                         name TEXT NOT NULL,
@@ -192,7 +186,7 @@ def main():
 
                 insert_rows(
                     cur, "users",
-                    ["user_id", "username", "role", "joined_at"], data["legacy_users"]
+                    ["user_id", "username", "role", "joined_at"], data["users"]
                 )
                 insert_rows(
                     cur, "jobs",
