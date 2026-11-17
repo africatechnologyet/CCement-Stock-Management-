@@ -46,9 +46,46 @@ def main():
             "Production import requires DATABASE_URL and CONCRETE_SOURCE_DATABASE_URL."
         )
 
-    source = psycopg2.connect(SOURCE_DSN, connect_timeout=15, sslmode="require")
     target = psycopg2.connect(TARGET_DSN, connect_timeout=15)
+    source = None
     try:
+        # Check the target first so later restarts do not depend on the old source DB.
+        with target.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.consumption'), to_regclass('public.users')")
+            if not all(cur.fetchone()):
+                raise RuntimeError(
+                    "Target DATABASE_URL is not the initialized Cement database."
+                )
+            cur.execute("SELECT to_regnamespace(%s)", (SCHEMA,))
+            if cur.fetchone()[0] is not None:
+                cur.execute(
+                    "SELECT counts FROM concrete_logistics._migration_history "
+                    "WHERE migration_key=%s",
+                    (MIGRATION_KEY,),
+                )
+                previous = cur.fetchone()
+                if previous:
+                    saved_counts = previous[0]
+                    actual_counts = {
+                        "users": count_rows(cur, "users"),
+                        "jobs": count_rows(cur, "jobs"),
+                        "trucks": count_rows(cur, "trucks"),
+                        "trips": count_rows(cur, "trips"),
+                        "job_orders": count_rows(cur, "job_orders"),
+                    }
+                    if saved_counts != actual_counts:
+                        raise RuntimeError(
+                            f"Import marker exists but row counts differ: marker={saved_counts}, actual={actual_counts}"
+                        )
+                    print("Production Concrete import already completed and verified; no changes made.")
+                    return
+                raise RuntimeError(
+                    f'Target schema "{SCHEMA}" already exists without a completed import marker. '
+                    "Refusing to overwrite or merge automatically."
+                )
+        target.commit()
+
+        source = psycopg2.connect(SOURCE_DSN, connect_timeout=15, sslmode="require")
         source.set_session(readonly=True, autocommit=False)
         with source.cursor() as src:
             src.execute("SET TIME ZONE 'UTC'")
@@ -99,33 +136,6 @@ def main():
         with target:
             with target.cursor() as cur:
                 cur.execute("SET LOCAL TIME ZONE 'UTC'")
-                cur.execute("SELECT to_regclass('public.consumption'), to_regclass('public.users')")
-                cement_tables = cur.fetchone()
-                if not all(cement_tables):
-                    raise RuntimeError(
-                        "Target DATABASE_URL is not the initialized Cement database."
-                    )
-
-                cur.execute("SELECT to_regnamespace(%s)", (SCHEMA,))
-                if cur.fetchone()[0] is not None:
-                    cur.execute(
-                        f'SELECT to_regclass(%s)', (f"{SCHEMA}._migration_history",)
-                    )
-                    history_exists = cur.fetchone()[0] is not None
-                    if history_exists:
-                        cur.execute(
-                            f'SELECT counts FROM "{SCHEMA}"._migration_history WHERE migration_key=%s',
-                            (MIGRATION_KEY,),
-                        )
-                        previous = cur.fetchone()
-                        if previous:
-                            print("Production Concrete import already completed; no changes made.")
-                            return
-                    raise RuntimeError(
-                        f'Target schema "{SCHEMA}" already exists without a completed import marker. '
-                        "Refusing to overwrite or merge automatically."
-                    )
-
                 cur.execute(f'CREATE SCHEMA "{SCHEMA}"')
                 cur.execute(
                     f"""
@@ -242,7 +252,8 @@ def main():
         print("Production Concrete data import completed and verified.")
         print(json.dumps(expected_counts, sort_keys=True))
     finally:
-        source.close()
+        if source is not None:
+            source.close()
         target.close()
 
 
