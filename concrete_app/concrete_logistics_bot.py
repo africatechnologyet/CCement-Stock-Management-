@@ -467,7 +467,8 @@ def kb_back():
     return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back",callback_data="back_main")]])
 
 def kb_main(uid):
-    admin=is_admin(uid); kb=[]
+    role=get_role(uid)
+    admin=role == "admin"; kb=[]
     if admin:
         kb+=[[InlineKeyboardButton("🆕 Add Job",callback_data="add_job")],
              [InlineKeyboardButton("🚛 Manage Trucks",callback_data="manage_trucks")]]
