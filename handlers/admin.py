@@ -5,7 +5,7 @@ Admin-only handlers: /adduser, /users, /adjust, /set_low_stock,
 import re
 import secrets
 from datetime import datetime, timedelta
-from aiogram import Router, F
+from aiogram import BaseMiddleware, Router, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -43,6 +43,27 @@ router = Router()
 
 def _is_admin(db_user):
     return db_user and db_user.is_active and db_user.role == UserRole.ADMIN
+
+class AdminAccessMiddleware(BaseMiddleware):
+    """Re-check admin authority on every admin-router update, including FSM steps."""
+    async def __call__(self, handler, event, data):
+        db_user = data.get("db_user")
+        if not _is_admin(db_user):
+            state = data.get("state")
+            if state is not None:
+                await state.clear()
+            if isinstance(event, Message):
+                await event.answer("❌ Admin access required. Your administrator access may have changed.")
+            elif isinstance(event, CallbackQuery):
+                await event.answer("Admin access required.", show_alert=True)
+            return
+        return await handler(event, data)
+
+
+# Every route in this module is administrative. This also protects confirmation
+# steps if an administrator is demoted or deactivated mid-workflow.
+router.message.middleware(AdminAccessMiddleware())
+router.callback_query.middleware(AdminAccessMiddleware())
 
 
 # ========== ADD USER ==========
