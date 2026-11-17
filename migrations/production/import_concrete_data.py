@@ -41,10 +41,8 @@ def count_rows(cur, table):
 
 
 def main():
-    if not SOURCE_DSN or not TARGET_DSN:
-        raise RuntimeError(
-            "Production import requires DATABASE_URL and CONCRETE_SOURCE_DATABASE_URL."
-        )
+    if not TARGET_DSN:
+        raise RuntimeError("Production import requires DATABASE_URL.")
 
     target = psycopg2.connect(TARGET_DSN, connect_timeout=15)
     source = None
@@ -91,6 +89,8 @@ def main():
                 )
         target.commit()
 
+        if not SOURCE_DSN:
+            raise RuntimeError("Initial production import requires CONCRETE_SOURCE_DATABASE_URL.")
         source = psycopg2.connect(SOURCE_DSN, connect_timeout=15, sslmode="require")
         source.set_session(readonly=True, autocommit=False)
         with source.cursor() as src:
