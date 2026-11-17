@@ -157,7 +157,14 @@ def ensure_production_concrete_import():
     LOG.info("Verified production Concrete data import marker.")
 
 
+def validate_production_import_script():
+    script = ROOT / "migrations" / "production" / "import_concrete_data.py"
+    compile(script.read_text(encoding="utf-8"), str(script), "exec")
+    LOG.info("Production data-import script syntax check passed.")
+
+
 def main():
+    validate_production_import_script()
     logging.basicConfig(
         level=os.getenv("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
