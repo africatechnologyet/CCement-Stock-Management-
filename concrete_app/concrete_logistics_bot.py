@@ -16,7 +16,7 @@ from openpyxl.styles import Font, PatternFill, Alignment
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
-    MessageHandler, ContextTypes, ConversationHandler, filters,
+    MessageHandler, ContextTypes, ConversationHandler, filters, ApplicationHandlerStop, TypeHandler,
 )
 
 # ─────────────────────────────────────────────
@@ -25,8 +25,7 @@ from telegram.ext import (
 BOT_TOKEN     = os.environ["BOT_TOKEN"]
 DATABASE_URL  = os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://", 1)
 BOT_USERNAME  = "CoBuiltConcreteTestBot"
-ADMIN_SECRET  = "Admin"
-WORKER_SECRET = "Worker"
+# Integrated access is controlled by active users in the Cement database.
 PORT          = int(os.environ.get("PORT", 10000))
 DB_SCHEMA     = os.environ.get("DB_SCHEMA", "public")
 CEMENT_SCHEMA = os.environ.get("CEMENT_SCHEMA", "public")
@@ -189,19 +188,19 @@ def cdel_prefix(*ps):
 # ─────────────────────────────────────────────
 # DATA LAYER
 # ─────────────────────────────────────────────
-def register_user(uid, uname, role):
-    db("""INSERT INTO users (user_id,username,role,joined_at) VALUES (%s,%s,%s,NOW())
-          ON CONFLICT(user_id) DO UPDATE SET role=EXCLUDED.role,username=EXCLUDED.username""",
-       (uid, uname or "", role))
-    cdel(f"role_{uid}")
-
 def get_role(uid) -> Optional[str]:
-    k = f"role_{uid}"
-    v = cget(k)
-    if v is not None: return v or None
-    row = db("SELECT role FROM users WHERE user_id=%s", (uid,), one=True)
-    r = row["role"] if row else None
-    cset(k, r or ""); return r
+    """Read live Cement access; never trust a separate Concrete user table/cache."""
+    if not CEMENT_INTEGRATION_ENABLED:
+        return None
+    row = db(
+        f'SELECT role FROM "{CEMENT_SCHEMA}".users '
+        "WHERE telegram_id=%s AND is_active=TRUE",
+        (uid,), one=True
+    )
+    if not row:
+        return None
+    role = row["role"]
+    return "admin" if str(role).lower() == "admin" else "worker"
 
 def is_admin(uid): return get_role(uid) == "admin"
 
@@ -481,8 +480,7 @@ def kb_main(uid):
         if not CEMENT_INTEGRATION_ENABLED:
             kb+=[[InlineKeyboardButton("🗑️ Delete Reports",callback_data="delete_reports_menu")]]
         kb+=[[InlineKeyboardButton("✅ Complete Job",callback_data="complete_job")],
-             [InlineKeyboardButton("❌ Cancel Job",callback_data="cancel_job")],
-             [InlineKeyboardButton("👥 Manage Users",callback_data="manage_users")]]
+             [InlineKeyboardButton("❌ Cancel Job",callback_data="cancel_job")]]
     return InlineKeyboardMarkup(kb)
 
 def kb_trucks():
@@ -512,34 +510,45 @@ def kb_trip_done():
 
 
 # ─────────────────────────────────────────────
+# SHARED AUTHORIZATION GATE
+# ─────────────────────────────────────────────
+ADMIN_CALLBACK_PREFIXES = (
+    "add_job", "add_truck", "manage_trucks", "clear_trucks",
+    "complete_job", "cancel_job", "do_complete_", "do_cancel_",
+    "delete_reports_menu", "delask_", "deldo_",
+)
+
+async def authorization_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user is None:
+        raise ApplicationHandlerStop
+    role = get_role(user.id)
+    if role is None:
+        if update.callback_query:
+            await update.callback_query.answer("Access denied. Contact a Cement administrator.", show_alert=True)
+        elif update.effective_message:
+            await update.effective_message.reply_text("🚫 Access denied. Your active Cement Stock account is required.")
+        raise ApplicationHandlerStop
+    query = update.callback_query
+    if query and query.data and query.data.startswith(ADMIN_CALLBACK_PREFIXES) and role != "admin":
+        await query.answer("Admin access required.", show_alert=True)
+        raise ApplicationHandlerStop
+
+# ─────────────────────────────────────────────
 # HANDLERS — /start & navigation
 # ─────────────────────────────────────────────
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    u=update.effective_user; args=context.args or []
-    if args:
-        if args[0]==ADMIN_SECRET:
-            register_user(u.id,u.username or "","admin")
-            await update.message.reply_text(
-                f"👑 *Welcome Admin {u.first_name}!*\n\n"
-                f"Admin:  `https://t.me/{BOT_USERNAME}?start=Admin`\n"
-                f"Worker: `https://t.me/{BOT_USERNAME}?start=Worker`",
-                parse_mode="Markdown",reply_markup=kb_main(u.id))
-        elif args[0]==WORKER_SECRET:
-            register_user(u.id,u.username or "","worker")
-            await update.message.reply_text(
-                f"👷 *Welcome {u.first_name}!*\n\nWorker access granted.",
-                parse_mode="Markdown",reply_markup=kb_main(u.id))
-        else:
-            await update.message.reply_text("❌ Invalid link.")
-        return
+    u=update.effective_user
     role=get_role(u.id)
-    if role:
-        lbl="👑 Admin" if role=="admin" else "👷 Worker"
+    if not role:
         await update.message.reply_text(
-            f"🏗️ *Concrete Logistics*\n_{lbl}_\n\nWelcome back, {u.first_name}!",
-            parse_mode="Markdown",reply_markup=kb_main(u.id))
-    else:
-        await update.message.reply_text("🚫 Use your access link to register.")
+            "🚫 Access denied. Ask a Cement Stock administrator to register or reactivate your account."
+        )
+        return
+    lbl="👑 Admin" if role=="admin" else "👷 Authorized User"
+    await update.message.reply_text(
+        f"🏗️ *Concrete Logistics*\\n_{lbl}_\\n\\nWelcome, {u.first_name}!",
+        parse_mode="Markdown",reply_markup=kb_main(u.id))
 
 async def cb_back_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query; await q.answer()
@@ -1059,6 +1068,7 @@ def main():
     app.add_handler(log_trip_conv,  group=0)
 
     # Then all other handlers (group 1)
+    app.add_handler(TypeHandler(Update, authorization_gate), group=-1)
     app.add_handler(CommandHandler("start",cmd_start),                                              group=1)
     app.add_handler(CallbackQueryHandler(cb_back_main,       pattern="^back_main$"),                group=0)
     app.add_handler(CallbackQueryHandler(cb_job_status,      pattern="^job_status$"),               group=1)
@@ -1076,11 +1086,6 @@ def main():
     app.add_handler(CallbackQueryHandler(cb_menu_export,     pattern="^menu_export$"),              group=1)
     app.add_handler(CallbackQueryHandler(cb_text_report,     pattern="^rep_(daily|weekly|monthly)$"),group=1)
     app.add_handler(CallbackQueryHandler(cb_excel_report,    pattern="^exp_(daily|weekly|monthly)$"),group=1)
-    app.add_handler(CallbackQueryHandler(cb_manage_users,   pattern="^manage_users$"),              group=1)
-    app.add_handler(CallbackQueryHandler(cb_user_info,       pattern="^userinfo_\\d+$"),             group=1)
-    app.add_handler(CallbackQueryHandler(cb_set_role,        pattern="^setrole_\\d+_(admin|worker)$"),group=1)
-    app.add_handler(CallbackQueryHandler(cb_remove_user,     pattern="^removeuser_\\d+$"),           group=1)
-    app.add_handler(CallbackQueryHandler(cb_confirm_remove,  pattern="^confirmremove_\\d+$"),        group=1)
     app.add_handler(CallbackQueryHandler(cb_noop,            pattern="^noop$"),                        group=1)
 
     async def error_handler(update, context):
