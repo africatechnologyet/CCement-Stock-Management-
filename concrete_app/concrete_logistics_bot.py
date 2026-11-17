@@ -199,8 +199,7 @@ def get_role(uid) -> Optional[str]:
     )
     if not row:
         return None
-    role = row["role"]
-    return "admin" if str(role).lower() == "admin" else "worker"
+    return str(row["role"]).lower()
 
 def is_admin(uid): return get_role(uid) == "admin"
 
@@ -472,8 +471,9 @@ def kb_main(uid):
     if admin:
         kb+=[[InlineKeyboardButton("🆕 Add Job",callback_data="add_job")],
              [InlineKeyboardButton("🚛 Manage Trucks",callback_data="manage_trucks")]]
-    kb+=[[InlineKeyboardButton("➕ Log New Trip",callback_data="log_trip")],
-         [InlineKeyboardButton("🏗️ Job Status",callback_data="job_status")],
+    if role in ("admin", "operator"):
+        kb+=[[InlineKeyboardButton("➕ Log New Trip",callback_data="log_trip")]]
+    kb+=[[InlineKeyboardButton("🏗️ Job Status",callback_data="job_status")],
          [InlineKeyboardButton("📊 View Reports",callback_data="menu_reports")],
          [InlineKeyboardButton("📥 Export Excel",callback_data="menu_export")]]
     if admin:
@@ -517,6 +517,7 @@ ADMIN_CALLBACK_PREFIXES = (
     "complete_job", "cancel_job", "do_complete_", "do_cancel_",
     "delete_reports_menu", "delask_", "deldo_",
 )
+TRIP_CALLBACK_PREFIXES = ("log_trip", "tj_", "grade_", "tp_", "plate_")
 
 async def authorization_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -530,8 +531,17 @@ async def authorization_gate(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.effective_message.reply_text("🚫 Access denied. Your active Cement Stock account is required.")
         raise ApplicationHandlerStop
     query = update.callback_query
+    if role == "storekeeper":
+        if query:
+            await query.answer("Concrete Logistics access is not assigned to the Storekeeper role.", show_alert=True)
+        elif update.effective_message:
+            await update.effective_message.reply_text("🚫 Concrete Logistics access is not assigned to the Storekeeper role.")
+        raise ApplicationHandlerStop
     if query and query.data and query.data.startswith(ADMIN_CALLBACK_PREFIXES) and role != "admin":
         await query.answer("Admin access required.", show_alert=True)
+        raise ApplicationHandlerStop
+    if query and query.data and query.data.startswith(TRIP_CALLBACK_PREFIXES) and role not in ("admin", "operator"):
+        await query.answer("Only Admins and Operators can submit Concrete trips.", show_alert=True)
         raise ApplicationHandlerStop
 
 # ─────────────────────────────────────────────
@@ -856,6 +866,9 @@ async def conv_trip_plate_list(update: Update, context: ContextTypes.DEFAULT_TYP
     return CONFIRM_TRIP
 
 async def conv_trip_plate_manual(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if get_role(update.effective_user.id) not in ("admin", "operator"):
+        await update.message.reply_text("🚫 Trip entry permission was removed. This operation was cancelled.")
+        return ConversationHandler.END
     plate=update.message.text.strip().upper(); context.user_data["plate"]=plate
     await update.message.reply_text(
         f"⚠️ *Confirm:*\n🏗️ `{context.user_data['job']}`\n"
@@ -879,6 +892,10 @@ async def conv_trip_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return ASK_VOLUME
 
 async def conv_trip_volume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if get_role(update.effective_user.id) not in ("admin", "operator"):
+        await update.message.reply_text("🚫 Trip entry permission was removed. This operation was cancelled.")
+        context.user_data.clear()
+        return ConversationHandler.END
     try:
         vol=float(update.message.text.strip())
         if vol<=0: raise ValueError
