@@ -162,16 +162,32 @@ def main():
         level=os.getenv("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    required = ("BOT_TOKEN", "CEMENT_BOT_TOKEN", "DATABASE_URL")
-    missing = [key for key in required if not os.getenv(key)]
+    environment = os.getenv("COBUILT_ENVIRONMENT", "development").lower()
+    cement_token = os.getenv("CEMENT_BOT_TOKEN") or os.getenv("BOT_TOKEN", "")
+    concrete_token = os.getenv("CONCRETE_BOT_TOKEN") or os.getenv("BOT_TOKEN", "")
+    missing = []
+    if not os.getenv("DATABASE_URL"):
+        missing.append("DATABASE_URL")
+    if not cement_token:
+        missing.append("BOT_TOKEN or CEMENT_BOT_TOKEN")
+    if not concrete_token or (environment == "production" and not os.getenv("CONCRETE_BOT_TOKEN")):
+        missing.append("CONCRETE_BOT_TOKEN" if environment == "production" else "BOT_TOKEN or CONCRETE_BOT_TOKEN")
     if missing:
         raise RuntimeError("Missing required environment variables: " + ", ".join(missing))
 
-    env = os.environ.copy()
-    env["COBUILT_CEMENT_INTEGRATION_ENABLED"] = "true"
-    env["COBUILT_SUPERVISED_WORKER"] = "true"
-    env["DB_SCHEMA"] = "concrete_logistics"
-    env["CEMENT_SCHEMA"] = "public"
+    base_env = os.environ.copy()
+    base_env["COBUILT_CEMENT_INTEGRATION_ENABLED"] = "true"
+    base_env["COBUILT_SUPERVISED_WORKER"] = "true"
+    base_env["DB_SCHEMA"] = "concrete_logistics"
+    base_env["CEMENT_SCHEMA"] = "public"
+
+    cement_env = base_env.copy()
+    cement_env["BOT_TOKEN"] = cement_token
+    cement_env["CEMENT_BOT_TOKEN"] = cement_token
+
+    concrete_env = base_env.copy()
+    concrete_env["BOT_TOKEN"] = concrete_token
+    concrete_env["CEMENT_BOT_TOKEN"] = cement_token
 
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
@@ -180,7 +196,7 @@ def main():
     if lock_conn is None:
         return
     try:
-        cement = start_child("Cement Stock bot", "bot.py", env)
+        cement = start_child("Cement Stock bot", "bot.py", cement_env)
         wait_for_cement_tables(cement)
         if stopping:
             return
@@ -191,7 +207,7 @@ def main():
         concrete = start_child(
             "Concrete Logistics bot",
             "concrete_app/concrete_logistics_bot.py",
-            env,
+            concrete_env,
         )
 
         while not stopping:
