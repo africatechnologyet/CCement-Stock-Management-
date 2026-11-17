@@ -1,8 +1,6 @@
 """
-Concrete Logistics Telegram Bot
-Production | PostgreSQL | Render Web Service
-Admin:  https://t.me/MaterialConcretebot?start=Admin
-Worker: https://t.me/MaterialConcretebot?start=Worker
+Integrated Concrete Logistics Telegram Bot
+PostgreSQL | Shared Cement database
 """
 
 import os, logging, io, threading, time, requests, re
@@ -24,7 +22,7 @@ from telegram.ext import (
 # ─────────────────────────────────────────────
 BOT_TOKEN     = os.environ["BOT_TOKEN"]
 DATABASE_URL  = os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://", 1)
-BOT_USERNAME  = "CoBuiltConcreteTestBot"
+BOT_USERNAME  = os.environ.get("CONCRETE_BOT_USERNAME", "")
 # Integrated access is controlled by active users in the Cement database.
 PORT          = int(os.environ.get("PORT", 10000))
 DB_SCHEMA     = os.environ.get("DB_SCHEMA", "public")
