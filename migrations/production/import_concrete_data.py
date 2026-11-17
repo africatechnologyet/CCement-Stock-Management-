@@ -58,6 +58,12 @@ def main():
                 )
             cur.execute("SELECT to_regnamespace(%s)", (SCHEMA,))
             if cur.fetchone()[0] is not None:
+                cur.execute("SELECT to_regclass('concrete_logistics._migration_history')")
+                if cur.fetchone()[0] is None:
+                    raise RuntimeError(
+                        f'Target schema "{SCHEMA}" exists without a migration history table. '
+                        "Refusing to overwrite or merge automatically."
+                    )
                 cur.execute(
                     "SELECT counts FROM concrete_logistics._migration_history "
                     "WHERE migration_key=%s",
