@@ -18,15 +18,6 @@ TARGET_DSN = os.environ.get("DATABASE_URL", "").replace(
     "postgresql+asyncpg://", "postgresql://", 1
 )
 
-TABLES = {
-    "legacy_users": "users",
-    "jobs": "jobs",
-    "trucks": "trucks",
-    "trips": "trips",
-    "job_orders": "job_orders",
-}
-
-
 def rows(source_cur, sql):
     source_cur.execute(sql)
     return source_cur.fetchall()
@@ -77,7 +68,7 @@ def main():
                 source_counts[table] = src.fetchone()[0]
 
             data = {
-                "legacy_users": rows(
+                "users": rows(
                     src,
                     "SELECT user_id, username, role, joined_at::timestamptz "
                     "FROM public.users ORDER BY user_id",
@@ -153,7 +144,7 @@ def main():
                         role TEXT NOT NULL DEFAULT 'worker',
                         joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                     );
-                    CREATE TABLE "{SCHEMA}".legacy_users (
+                    CREATE TABLE "{SCHEMA}"._legacy_users_archive (
                         user_id BIGINT PRIMARY KEY,
                         username TEXT,
                         role TEXT NOT NULL,
@@ -200,7 +191,7 @@ def main():
                 )
 
                 insert_rows(
-                    cur, "legacy_users",
+                    cur, "users",
                     ["user_id", "username", "role", "joined_at"], data["legacy_users"]
                 )
                 insert_rows(
@@ -225,14 +216,14 @@ def main():
 
                 for table in ("jobs", "trucks", "trips", "job_orders"):
                     cur.execute(
-                        "SELECT setval(pg_get_serial_sequence(%s, 'id'), "
+                        "SELECT setval(pg_get_serial_sequence(%s, 'id')::regclass, "
                         "COALESCE(MAX(id), 1), MAX(id) IS NOT NULL) "
                         f'FROM "{SCHEMA}"."{table}"',
                         (f"{SCHEMA}.{table}",),
                     )
 
                 target_counts = {
-                    "users": count_rows(cur, "legacy_users"),
+                    "users": count_rows(cur, "users"),
                     "jobs": count_rows(cur, "jobs"),
                     "trucks": count_rows(cur, "trucks"),
                     "trips": count_rows(cur, "trips"),
