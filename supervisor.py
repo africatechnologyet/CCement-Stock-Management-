@@ -1,8 +1,7 @@
-"""Development supervisor for the combined CoBuilt Telegram worker.
+"""Supervisor for the combined CoBuilt Cement and Concrete Telegram worker.
 
-Starts the Cement bot first so its SQLAlchemy metadata creates the shared
-Cement tables, applies the additive development migration, then starts the
-Concrete bot. Each bot keeps its own Telegram token and polling process.
+Initializes Cement, applies environment-specific schema migrations, optionally
+imports legacy Concrete production data once, then starts the Concrete bot.
 """
 import logging
 import os
@@ -105,8 +104,10 @@ def wait_for_cement_tables(cement_process, timeout_seconds=90):
     raise RuntimeError(f"Cement database tables did not initialize in time: {last_error}")
 
 
-def apply_development_migration():
-    migration = ROOT / "migrations" / "dev" / "001_add_external_consumption_reference.sql"
+def apply_consumption_migration():
+    environment = os.getenv("COBUILT_ENVIRONMENT", "development").lower()
+    migration_dir = "production" if environment == "production" else "dev"
+    migration = ROOT / "migrations" / migration_dir / "001_add_external_consumption_reference.sql"
     sql = migration.read_text(encoding="utf-8")
     conn = psycopg2.connect(database_dsn(), connect_timeout=10)
     try:
@@ -118,7 +119,42 @@ def apply_development_migration():
         raise
     finally:
         conn.close()
-    LOG.info("External consumption reference migration applied.")
+    LOG.info("%s Cement consumption migration applied.", environment.title())
+
+
+def ensure_production_concrete_import():
+    if os.getenv("COBUILT_ENVIRONMENT", "development").lower() != "production":
+        return
+
+    import_enabled = os.getenv("COBUILT_RUN_PRODUCTION_IMPORT", "false").lower() == "true"
+    if import_enabled:
+        script = ROOT / "migrations" / "production" / "import_concrete_data.py"
+        LOG.warning("Running guarded one-time production Concrete data import.")
+        subprocess.run([sys.executable, str(script)], cwd=str(ROOT), check=True)
+        return
+
+    conn = psycopg2.connect(database_dsn(), connect_timeout=10)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema='concrete_logistics' AND table_name='_migration_history'"
+            )
+            if not cur.fetchone():
+                raise RuntimeError(
+                    "Production Concrete data import is not complete. "
+                    "Set COBUILT_RUN_PRODUCTION_IMPORT=true for the approved cutover."
+                )
+            cur.execute(
+                'SELECT 1 FROM concrete_logistics._migration_history '
+                "WHERE migration_key=%s",
+                ("2026-11-17-production-concrete-import-v1",),
+            )
+            if not cur.fetchone():
+                raise RuntimeError("Production Concrete import marker is missing.")
+    finally:
+        conn.close()
+    LOG.info("Verified production Concrete data import marker.")
 
 
 def main():
@@ -148,7 +184,8 @@ def main():
         wait_for_cement_tables(cement)
         if stopping:
             return
-        apply_development_migration()
+        apply_consumption_migration()
+        ensure_production_concrete_import()
         if cement.poll() is not None:
             raise RuntimeError("Cement Stock bot exited during initialization.")
         concrete = start_child(
