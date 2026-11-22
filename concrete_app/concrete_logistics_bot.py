@@ -46,6 +46,8 @@ log = logging.getLogger(__name__)
 ASK_NEW_JOB_NAME = 10
 CONFIRM_NEW_JOB  = 11
 ASK_NEW_TRUCK    = 20
+ASK_DATE_FROM    = 30
+ASK_DATE_TO      = 31
 
 
 # ─────────────────────────────────────────────
@@ -321,8 +323,20 @@ def save_trip(uid, job, grade, plate, vol, source_message_id=None):
     finally:
         get_pool().putconn(conn)
 
+def _custom_dates(period):
+    """Custom period key 'r_YYYYMMDD_YYYYMMDD' -> (start, end) dates, else None."""
+    m = re.fullmatch(r"r_(\d{8})_(\d{8})", period or "")
+    if not m: return None
+    return (datetime.strptime(m.group(1), "%Y%m%d").date(),
+            datetime.strptime(m.group(2), "%Y%m%d").date())
+
+def custom_key(start, end):
+    return f"r_{start:%Y%m%d}_{end:%Y%m%d}"
+
 def _range(period):
     t = date.today()
+    cd = _custom_dates(period)
+    if cd: return "logged_at::date BETWEEN %s AND %s", cd
     if period == "daily":  return "logged_at::date=%s", (t,)
     if period == "weekly":
         m = t - timedelta(days=t.weekday())
@@ -376,6 +390,11 @@ def set_user_role(uid, role):
 # ─────────────────────────────────────────────
 def plabel(p):
     t = date.today()
+    cd = _custom_dates(p)
+    if cd:
+        a, b = cd
+        if a == b: return f"{a.strftime('%b %d, %Y')}"
+        return f"{a.strftime('%b %d, %Y')} – {b.strftime('%b %d, %Y')}"
     if p=="daily":  return f"Daily — {t.strftime('%b %d, %Y')}"
     if p=="weekly":
         m = t-timedelta(days=t.weekday())
@@ -863,6 +882,7 @@ async def cb_menu_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📅 Today",callback_data="rep_daily")],
             [InlineKeyboardButton("🗓️ This Week",callback_data="rep_weekly")],
             [InlineKeyboardButton("📆 This Month",callback_data="rep_monthly")],
+            [InlineKeyboardButton("🗓️ Custom period",callback_data="rep_custom")],
             [InlineKeyboardButton("⬅️ Back",callback_data="back_main")]]))
 
 async def cb_menu_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -872,6 +892,7 @@ async def cb_menu_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📅 Today",callback_data="exp_daily")],
             [InlineKeyboardButton("🗓️ This Week",callback_data="exp_weekly")],
             [InlineKeyboardButton("📆 This Month",callback_data="exp_monthly")],
+            [InlineKeyboardButton("🗓️ Custom period",callback_data="exp_custom")],
             [InlineKeyboardButton("⬅️ Back",callback_data="back_main")]]))
 
 async def cb_text_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -885,8 +906,124 @@ async def cb_excel_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     buf=excel_report(period)
     await context.bot.send_document(
         chat_id=q.message.chat_id,
-        document=InputFile(buf,filename=f"trips_{period}_{date.today()}.xlsx"),
+        document=InputFile(buf,filename=(f"trips_{period[2:]}.xlsx" if _custom_dates(period) else f"trips_{period}_{date.today()}.xlsx")),
         caption=f"📥 *{plabel(period)}*",parse_mode="Markdown")
+
+
+# ─────────────────────────────────────────────
+# CUSTOM REPORT PERIOD
+# ─────────────────────────────────────────────
+def _parse_date(text):
+    """Accepts 01/11/2026, 1-11-2026, 2026-11-01, 01.11.2026, 1/11 (this year) or 'today'."""
+    t = (text or "").strip().lower()
+    if t in ("today", "now"): return date.today()
+    t = t.replace(".", "/").replace("-", "/").replace(" ", "")
+    for fmt in ("%d/%m/%Y", "%Y/%m/%d", "%d/%m/%y"):
+        try: return datetime.strptime(t, fmt).date()
+        except ValueError: pass
+    try:
+        d = datetime.strptime(t, "%d/%m").date().replace(year=date.today().year)
+        return d
+    except ValueError:
+        return None
+
+def _quick_ranges():
+    t = date.today()
+    first_this = t.replace(day=1)
+    last_prev = first_this - timedelta(days=1)
+    first_prev = last_prev.replace(day=1)
+    return [
+        ("Yesterday",      t - timedelta(days=1), t - timedelta(days=1)),
+        ("Last 7 days",    t - timedelta(days=6), t),
+        ("Last 30 days",   t - timedelta(days=29), t),
+        (f"Last month ({first_prev.strftime('%b')})", first_prev, last_prev),
+        (f"This year ({t.year})", date(t.year, 1, 1), t),
+    ]
+
+async def cb_custom_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    mode=q.data.split("_",1)[0]            # "rep" (view) or "exp" (Excel)
+    back="menu_reports" if mode=="rep" else "menu_export"
+    kb=[[InlineKeyboardButton(f"📅 {lbl}",callback_data=f"{mode}_{custom_key(a,b)}")] for lbl,a,b in _quick_ranges()]
+    kb.append([InlineKeyboardButton("✏️ Choose start & end dates",callback_data=f"{mode}_dates")])
+    kb.append([InlineKeyboardButton("⬅️ Back",callback_data=back)])
+    title="📊 *Custom report period:*" if mode=="rep" else "📥 *Custom Excel period:*"
+    await q.edit_message_text(title,parse_mode="Markdown",reply_markup=InlineKeyboardMarkup(kb))
+
+def _kb_date_cancel(extra=None):
+    rows=[extra] if extra else []
+    rows.append([InlineKeyboardButton("❌ Cancel",callback_data="dt_cancel")])
+    return InlineKeyboardMarkup(rows)
+
+async def conv_dates_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    q=update.callback_query; await q.answer()
+    context.user_data["dt_mode"]=q.data.split("_",1)[0]
+    context.user_data.pop("dt_from",None)
+    await q.edit_message_text(
+        "📅 *Start date*\n\nType the first day of the period, e.g. *01/11/2026*\n_(day/month/year)_",
+        parse_mode="Markdown",reply_markup=_kb_date_cancel())
+    return ASK_DATE_FROM
+
+async def conv_dates_from(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    d=_parse_date(update.message.text)
+    if not d:
+        await update.message.reply_text("⚠️ I couldn't read that date. Please type it like *01/11/2026* (day/month/year).",
+            parse_mode="Markdown",reply_markup=_kb_date_cancel()); return ASK_DATE_FROM
+    if d>date.today():
+        await update.message.reply_text("⚠️ The start date can't be in the future. Please type another date.",
+            reply_markup=_kb_date_cancel()); return ASK_DATE_FROM
+    context.user_data["dt_from"]=d
+    await update.message.reply_text(
+        f"✅ Start: *{d.strftime('%b %d, %Y')}*\n\n📅 *End date*\n\nType the last day of the period, or tap *Today*.",
+        parse_mode="Markdown",
+        reply_markup=_kb_date_cancel([InlineKeyboardButton("📅 Today",callback_data="dt_today")]))
+    return ASK_DATE_TO
+
+async def _finish_dates(update: Update, context: ContextTypes.DEFAULT_TYPE, end) -> int:
+    msg=update.effective_message
+    start=context.user_data.get("dt_from")
+    mode=context.user_data.get("dt_mode","rep")
+    if not start:
+        await msg.reply_text("⚠️ Please start again from 📊 View Reports.",reply_markup=kb_back())
+        return ConversationHandler.END
+    if end<start:
+        await msg.reply_text(f"⚠️ The end date must be on or after *{start.strftime('%b %d, %Y')}*. Please type another date.",
+            parse_mode="Markdown",reply_markup=_kb_date_cancel([InlineKeyboardButton("📅 Today",callback_data="dt_today")]))
+        return ASK_DATE_TO
+    for k in ("dt_from","dt_mode"): context.user_data.pop(k,None)
+    period=custom_key(start,end)
+    if mode=="exp":
+        await msg.reply_text("⏳ Generating Excel…")
+        buf=excel_report(period)
+        await context.bot.send_document(
+            chat_id=msg.chat_id,
+            document=InputFile(buf,filename=f"trips_{period[2:]}.xlsx"),
+            caption=f"📥 *{plabel(period)}*",parse_mode="Markdown")
+    else:
+        await msg.reply_text(text_report(period),parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back",callback_data="menu_reports")]]))
+    return ConversationHandler.END
+
+async def conv_dates_to(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    d=_parse_date(update.message.text)
+    if not d:
+        await update.message.reply_text("⚠️ I couldn't read that date. Please type it like *22/11/2026* (day/month/year).",
+            parse_mode="Markdown",reply_markup=_kb_date_cancel([InlineKeyboardButton("📅 Today",callback_data="dt_today")]))
+        return ASK_DATE_TO
+    return await _finish_dates(update,context,d)
+
+async def conv_dates_today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    q=update.callback_query; await q.answer()
+    await q.edit_message_reply_markup(reply_markup=None)
+    return await _finish_dates(update,context,date.today())
+
+async def conv_dates_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    q=update.callback_query; await q.answer()
+    for k in ("dt_from","dt_mode"): context.user_data.pop(k,None)
+    await q.edit_message_text("❌ Custom report cancelled.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📊 View Reports",callback_data="menu_reports")],
+                                           [InlineKeyboardButton("🏠 Main Menu",callback_data="back_main")]]))
+    return ConversationHandler.END
 
 
 # ─────────────────────────────────────────────
@@ -1158,10 +1295,23 @@ def main():
         allow_reentry=True,
     )
 
+    custom_dates_conv=ConversationHandler(
+        entry_points=[CallbackQueryHandler(conv_dates_start,pattern="^(rep|exp)_dates$")],
+        states={
+            ASK_DATE_FROM:[MessageHandler(filters.TEXT&~filters.COMMAND,conv_dates_from)],
+            ASK_DATE_TO:  [MessageHandler(filters.TEXT&~filters.COMMAND,conv_dates_to),
+                           CallbackQueryHandler(conv_dates_today,pattern="^dt_today$")],
+        },
+        fallbacks=[CallbackQueryHandler(conv_dates_cancel,pattern="^dt_cancel$"),
+                   CommandHandler("cancel",conv_cancel)],
+        allow_reentry=True,
+    )
+
     # Register conversation handlers first (group 0)
     app.add_handler(add_job_conv,   group=0)
     app.add_handler(add_truck_conv, group=0)
     app.add_handler(log_trip_conv,  group=0)
+    app.add_handler(custom_dates_conv, group=0)
 
     # Then all other handlers (group 1)
     app.add_handler(TypeHandler(Update, authorization_gate), group=-1)
@@ -1182,8 +1332,9 @@ def main():
     app.add_handler(CallbackQueryHandler(cb_del_do,          pattern="^deldo_(daily|weekly|monthly|all)$"),  group=1)
     app.add_handler(CallbackQueryHandler(cb_menu_reports,    pattern="^menu_reports$"),             group=1)
     app.add_handler(CallbackQueryHandler(cb_menu_export,     pattern="^menu_export$"),              group=1)
-    app.add_handler(CallbackQueryHandler(cb_text_report,     pattern="^rep_(daily|weekly|monthly)$"),group=1)
-    app.add_handler(CallbackQueryHandler(cb_excel_report,    pattern="^exp_(daily|weekly|monthly)$"),group=1)
+    app.add_handler(CallbackQueryHandler(cb_text_report,     pattern="^rep_(daily|weekly|monthly|r_\\d{8}_\\d{8})$"),group=1)
+    app.add_handler(CallbackQueryHandler(cb_excel_report,    pattern="^exp_(daily|weekly|monthly|r_\\d{8}_\\d{8})$"),group=1)
+    app.add_handler(CallbackQueryHandler(cb_custom_menu,     pattern="^(rep|exp)_custom$"),           group=1)
     app.add_handler(CallbackQueryHandler(cb_noop,            pattern="^noop$"),                        group=1)
 
     async def error_handler(update, context):
