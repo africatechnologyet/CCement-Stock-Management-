@@ -945,81 +945,172 @@ async def cb_custom_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode=q.data.split("_",1)[0]            # "rep" (view) or "exp" (Excel)
     back="menu_reports" if mode=="rep" else "menu_export"
     kb=[[InlineKeyboardButton(f"📅 {lbl}",callback_data=f"{mode}_{custom_key(a,b)}")] for lbl,a,b in _quick_ranges()]
-    kb.append([InlineKeyboardButton("✏️ Choose start & end dates",callback_data=f"{mode}_dates")])
+    kb.append([InlineKeyboardButton("🗓️ Pick start & end dates",callback_data=f"{mode}_dates")])
     kb.append([InlineKeyboardButton("⬅️ Back",callback_data=back)])
     title="📊 *Custom report period:*" if mode=="rep" else "📥 *Custom Excel period:*"
     await q.edit_message_text(title,parse_mode="Markdown",reply_markup=InlineKeyboardMarkup(kb))
 
-def _kb_date_cancel(extra=None):
-    rows=[extra] if extra else []
-    rows.append([InlineKeyboardButton("❌ Cancel",callback_data="dt_cancel")])
+_MONTHS=["January","February","March","April","May","June","July","August","September","October","November","December"]
+
+def _fmt(d): return d.strftime('%b %d, %Y') if d else "not set"
+
+def _picker_text(ud):
+    what="📊 report" if ud.get("dt_mode","rep")=="rep" else "📥 Excel"
+    return (f"🗓️ *Choose the {what} dates*\n\n"
+            f"▶️ Start: *{_fmt(ud.get('dt_from'))}*\n"
+            f"⏹️ End:   *{_fmt(ud.get('dt_to'))}*\n\n"
+            "Tap a button to pick a date on the calendar.\n"
+            "_You can also type a date, e.g. 01/11/2026_")
+
+def _picker_kb(ud):
+    go="✅ Show report" if ud.get("dt_mode","rep")=="rep" else "✅ Export Excel"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"📅 Start date: {_fmt(ud.get('dt_from'))}",callback_data="dt_set_s")],
+        [InlineKeyboardButton(f"📅 End date: {_fmt(ud.get('dt_to'))}",callback_data="dt_set_e")],
+        [InlineKeyboardButton(go,callback_data="dt_go")],
+        [InlineKeyboardButton("❌ Cancel",callback_data="dt_cancel")],
+    ])
+
+def _shift_month(y,m,delta):
+    i=y*12+(m-1)+delta
+    return i//12, i%12+1
+
+def _calendar_kb(which, y, m, ud):
+    """which: 's' (start) or 'e' (end). Future days, and for the end date days before the start, are not selectable."""
+    import calendar
+    today=date.today(); lo=ud.get("dt_from") if which=="e" else None
+    rows=[]
+    py,pm=_shift_month(y,m,-1); ny,nm=_shift_month(y,m,1)
+    nav=[InlineKeyboardButton("«",callback_data=f"dt_nav_{which}_{y-1}{m:02d}"),
+         InlineKeyboardButton("‹",callback_data=f"dt_nav_{which}_{py}{pm:02d}"),
+         InlineKeyboardButton(f"{_MONTHS[m-1][:3]} {y}",callback_data="dt_noop")]
+    if (ny,nm)<=(today.year,today.month):
+        nav.append(InlineKeyboardButton("›",callback_data=f"dt_nav_{which}_{ny}{nm:02d}"))
+        if (y+1,m)<=(today.year,today.month):
+            nav.append(InlineKeyboardButton("»",callback_data=f"dt_nav_{which}_{y+1}{m:02d}"))
+    rows.append(nav)
+    rows.append([InlineKeyboardButton(d,callback_data="dt_noop") for d in ("Mo","Tu","We","Th","Fr","Sa","Su")])
+    chosen=ud.get("dt_from") if which=="s" else ud.get("dt_to")
+    for week in calendar.Calendar(firstweekday=0).monthdayscalendar(y,m):
+        r=[]
+        for day in week:
+            if day==0: r.append(InlineKeyboardButton(" ",callback_data="dt_noop")); continue
+            d=date(y,m,day)
+            if d>today or (lo and d<lo):
+                r.append(InlineKeyboardButton("·",callback_data="dt_noop"))
+            else:
+                lbl=f"[{day}]" if d==chosen else (f"•{day}" if d==today else str(day))
+                r.append(InlineKeyboardButton(lbl,callback_data=f"dt_day_{which}_{d:%Y%m%d}"))
+        rows.append(r)
+    rows.append([InlineKeyboardButton("📅 Today",callback_data=f"dt_day_{which}_{today:%Y%m%d}"),
+                 InlineKeyboardButton("⬅️ Back",callback_data="dt_back")])
     return InlineKeyboardMarkup(rows)
+
+def _calendar_text(which, ud):
+    if which=="s": return "▶️ *Pick the START date*\n_(first day of the report)_"
+    return f"⏹️ *Pick the END date*\n_(last day of the report — from {_fmt(ud.get('dt_from'))})_"
 
 async def conv_dates_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     q=update.callback_query; await q.answer()
-    context.user_data["dt_mode"]=q.data.split("_",1)[0]
-    context.user_data.pop("dt_from",None)
-    await q.edit_message_text(
-        "📅 *Start date*\n\nType the first day of the period, e.g. *01/11/2026*\n_(day/month/year)_",
-        parse_mode="Markdown",reply_markup=_kb_date_cancel())
+    ud=context.user_data
+    ud["dt_mode"]=q.data.split("_",1)[0]
+    ud.pop("dt_from",None); ud["dt_to"]=date.today(); ud.pop("dt_pick",None)
+    await q.edit_message_text(_picker_text(ud),parse_mode="Markdown",reply_markup=_picker_kb(ud))
     return ASK_DATE_FROM
 
-async def conv_dates_from(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def conv_dates_open(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    q=update.callback_query; await q.answer()
+    ud=context.user_data; which=q.data[-1]
+    ud["dt_pick"]=which
+    cur=(ud.get("dt_from") if which=="s" else ud.get("dt_to")) or (ud.get("dt_from") if which=="e" else None) or date.today()
+    await q.edit_message_text(_calendar_text(which,ud),parse_mode="Markdown",reply_markup=_calendar_kb(which,cur.year,cur.month,ud))
+    return ASK_DATE_FROM
+
+async def conv_dates_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    q=update.callback_query; await q.answer()
+    _,_,which,ym=q.data.split("_")
+    y,m=int(ym[:4]),int(ym[4:])
+    today=date.today()
+    if (y,m)>(today.year,today.month): y,m=today.year,today.month
+    await q.edit_message_reply_markup(reply_markup=_calendar_kb(which,y,m,context.user_data))
+    return ASK_DATE_FROM
+
+def _apply_date(ud, which, d):
+    """Sets start or end. Returns a warning text or None."""
+    if d>date.today(): return "⚠️ That date is in the future."
+    if which=="s":
+        ud["dt_from"]=d
+        if ud.get("dt_to") and ud["dt_to"]<d:
+            ud.pop("dt_to",None); return "ℹ️ End date was before the new start date — please pick the end date again."
+    else:
+        if ud.get("dt_from") and d<ud["dt_from"]:
+            return f"⚠️ The end date must be on or after {_fmt(ud['dt_from'])}."
+        ud["dt_to"]=d
+    return None
+
+async def conv_dates_day(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    q=update.callback_query
+    _,_,which,ds=q.data.split("_")
+    warn=_apply_date(context.user_data,which,datetime.strptime(ds,"%Y%m%d").date())
+    await q.answer(warn or f"{'Start' if which=='s' else 'End'}: {_fmt(datetime.strptime(ds,'%Y%m%d').date())}",
+                   show_alert=bool(warn))
+    context.user_data.pop("dt_pick",None)
+    ud=context.user_data
+    await q.edit_message_text(_picker_text(ud),parse_mode="Markdown",reply_markup=_picker_kb(ud))
+    return ASK_DATE_FROM
+
+async def conv_dates_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    q=update.callback_query; await q.answer()
+    ud=context.user_data; ud.pop("dt_pick",None)
+    await q.edit_message_text(_picker_text(ud),parse_mode="Markdown",reply_markup=_picker_kb(ud))
+    return ASK_DATE_FROM
+
+async def conv_dates_noop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.callback_query.answer()
+    return ASK_DATE_FROM
+
+async def conv_dates_typed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    ud=context.user_data
     d=_parse_date(update.message.text)
     if not d:
-        await update.message.reply_text("⚠️ I couldn't read that date. Please type it like *01/11/2026* (day/month/year).",
-            parse_mode="Markdown",reply_markup=_kb_date_cancel()); return ASK_DATE_FROM
-    if d>date.today():
-        await update.message.reply_text("⚠️ The start date can't be in the future. Please type another date.",
-            reply_markup=_kb_date_cancel()); return ASK_DATE_FROM
-    context.user_data["dt_from"]=d
-    await update.message.reply_text(
-        f"✅ Start: *{d.strftime('%b %d, %Y')}*\n\n📅 *End date*\n\nType the last day of the period, or tap *Today*.",
-        parse_mode="Markdown",
-        reply_markup=_kb_date_cancel([InlineKeyboardButton("📅 Today",callback_data="dt_today")]))
-    return ASK_DATE_TO
+        await update.message.reply_text("⚠️ I couldn't read that date. Type it like *01/11/2026* (day/month/year), or use the buttons.",
+            parse_mode="Markdown",reply_markup=_picker_kb(ud)); return ASK_DATE_FROM
+    which=ud.pop("dt_pick",None) or ("s" if not ud.get("dt_from") else "e")
+    warn=_apply_date(ud,which,d)
+    await update.message.reply_text(((warn+"\n\n") if warn else "")+_picker_text(ud),
+        parse_mode="Markdown",reply_markup=_picker_kb(ud))
+    return ASK_DATE_FROM
 
-async def _finish_dates(update: Update, context: ContextTypes.DEFAULT_TYPE, end) -> int:
-    msg=update.effective_message
-    start=context.user_data.get("dt_from")
-    mode=context.user_data.get("dt_mode","rep")
-    if not start:
-        await msg.reply_text("⚠️ Please start again from 📊 View Reports.",reply_markup=kb_back())
-        return ConversationHandler.END
+async def conv_dates_go(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    q=update.callback_query; ud=context.user_data
+    start,end=ud.get("dt_from"),ud.get("dt_to")
+    if not start or not end:
+        await q.answer("Please pick the "+("start" if not start else "end")+" date first.",show_alert=True)
+        return ASK_DATE_FROM
     if end<start:
-        await msg.reply_text(f"⚠️ The end date must be on or after *{start.strftime('%b %d, %Y')}*. Please type another date.",
-            parse_mode="Markdown",reply_markup=_kb_date_cancel([InlineKeyboardButton("📅 Today",callback_data="dt_today")]))
-        return ASK_DATE_TO
-    for k in ("dt_from","dt_mode"): context.user_data.pop(k,None)
+        await q.answer("The end date must be on or after the start date.",show_alert=True)
+        return ASK_DATE_FROM
+    mode=ud.get("dt_mode","rep")
+    for k in ("dt_from","dt_to","dt_mode","dt_pick"): ud.pop(k,None)
     period=custom_key(start,end)
     if mode=="exp":
-        await msg.reply_text("⏳ Generating Excel…")
+        await q.answer("Generating…")
+        await q.edit_message_text(f"📥 Excel for *{plabel(period)}* — sending…",parse_mode="Markdown")
         buf=excel_report(period)
         await context.bot.send_document(
-            chat_id=msg.chat_id,
+            chat_id=q.message.chat_id,
             document=InputFile(buf,filename=f"trips_{period[2:]}.xlsx"),
             caption=f"📥 *{plabel(period)}*",parse_mode="Markdown")
     else:
-        await msg.reply_text(text_report(period),parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back",callback_data="menu_reports")]]))
+        await q.answer()
+        await q.edit_message_text(text_report(period),parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🗓️ Other dates",callback_data="rep_dates")],
+                                               [InlineKeyboardButton("⬅️ Back",callback_data="menu_reports")]]))
     return ConversationHandler.END
-
-async def conv_dates_to(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    d=_parse_date(update.message.text)
-    if not d:
-        await update.message.reply_text("⚠️ I couldn't read that date. Please type it like *22/11/2026* (day/month/year).",
-            parse_mode="Markdown",reply_markup=_kb_date_cancel([InlineKeyboardButton("📅 Today",callback_data="dt_today")]))
-        return ASK_DATE_TO
-    return await _finish_dates(update,context,d)
-
-async def conv_dates_today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    q=update.callback_query; await q.answer()
-    await q.edit_message_reply_markup(reply_markup=None)
-    return await _finish_dates(update,context,date.today())
 
 async def conv_dates_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     q=update.callback_query; await q.answer()
-    for k in ("dt_from","dt_mode"): context.user_data.pop(k,None)
+    for k in ("dt_from","dt_to","dt_mode","dt_pick"): context.user_data.pop(k,None)
     await q.edit_message_text("❌ Custom report cancelled.",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📊 View Reports",callback_data="menu_reports")],
                                            [InlineKeyboardButton("🏠 Main Menu",callback_data="back_main")]]))
@@ -1298,9 +1389,13 @@ def main():
     custom_dates_conv=ConversationHandler(
         entry_points=[CallbackQueryHandler(conv_dates_start,pattern="^(rep|exp)_dates$")],
         states={
-            ASK_DATE_FROM:[MessageHandler(filters.TEXT&~filters.COMMAND,conv_dates_from)],
-            ASK_DATE_TO:  [MessageHandler(filters.TEXT&~filters.COMMAND,conv_dates_to),
-                           CallbackQueryHandler(conv_dates_today,pattern="^dt_today$")],
+            ASK_DATE_FROM:[MessageHandler(filters.TEXT&~filters.COMMAND,conv_dates_typed),
+                           CallbackQueryHandler(conv_dates_open,pattern="^dt_set_[se]$"),
+                           CallbackQueryHandler(conv_dates_nav, pattern="^dt_nav_[se]_\\d{6}$"),
+                           CallbackQueryHandler(conv_dates_day, pattern="^dt_day_[se]_\\d{8}$"),
+                           CallbackQueryHandler(conv_dates_back,pattern="^dt_back$"),
+                           CallbackQueryHandler(conv_dates_noop,pattern="^dt_noop$"),
+                           CallbackQueryHandler(conv_dates_go,  pattern="^dt_go$")],
         },
         fallbacks=[CallbackQueryHandler(conv_dates_cancel,pattern="^dt_cancel$"),
                    CommandHandler("cancel",conv_cancel)],
