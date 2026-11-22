@@ -44,6 +44,7 @@ log = logging.getLogger(__name__)
 (ASK_JOB, ASK_GRADE, ASK_PLATE, ASK_PLATE_MANUAL,
  ASK_VOLUME, CONFIRM_TRIP) = range(6)
 ASK_NEW_JOB_NAME = 10
+CONFIRM_NEW_JOB  = 11
 ASK_NEW_TRUCK    = 20
 
 
@@ -513,7 +514,7 @@ def kb_trip_done():
 # ─────────────────────────────────────────────
 ADMIN_CALLBACK_PREFIXES = (
     "add_job", "add_truck", "manage_trucks", "clear_trucks",
-    "complete_job", "cancel_job", "do_complete_", "do_cancel_",
+    "complete_job", "cancel_job", "do_complete_", "do_cancel_", "jobadd_",
     "delete_reports_menu", "delask_", "deldo_",
 )
 TRIP_CALLBACK_PREFIXES = ("log_trip", "tj_", "grade_", "tp_", "plate_")
@@ -673,8 +674,35 @@ async def conv_job_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         await update.message.reply_text("🚫 Admin access was removed. This operation was cancelled.")
         return ConversationHandler.END
     name=update.message.text.strip()
+    if not name:
+        await update.message.reply_text("🆕 Enter job site name:")
+        return ASK_NEW_JOB_NAME
+    context.user_data["new_job_name"]=name
+    await update.message.reply_text(
+        f"🆕 *Add this job?*\n\n🏗️ {_md(name)}",parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Yes, add job",callback_data="jobadd_yes")],
+            [InlineKeyboardButton("✏️ Change name",callback_data="jobadd_edit")],
+            [InlineKeyboardButton("❌ Cancel",callback_data="jobadd_no")]]))
+    return CONFIRM_NEW_JOB
+
+async def conv_job_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    q=update.callback_query; await q.answer()
+    choice=q.data.replace("jobadd_","")
+    name=context.user_data.get("new_job_name")
+    if choice=="edit":
+        await q.edit_message_text("🆕 Enter job site name:")
+        return ASK_NEW_JOB_NAME
+    context.user_data.pop("new_job_name",None)
+    if choice!="yes" or not name:
+        await q.edit_message_text("❌ Job not added.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Main Menu",callback_data="back_main")]]))
+        return ConversationHandler.END
+    if not is_admin(q.from_user.id):
+        await q.edit_message_text("🚫 Admin access was removed. This operation was cancelled.")
+        return ConversationHandler.END
     add_job(name)
-    await update.message.reply_text(f"✅ *Job '{name}' added!*",parse_mode="Markdown",
+    await q.edit_message_text(f"✅ *Job '{_md(name)}' added!*",parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🆕 Add Another",callback_data="add_job")],
             [InlineKeyboardButton("🏠 Main Menu",callback_data="back_main")]]))
@@ -696,17 +724,43 @@ async def cb_complete_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.edit_message_text("✅ *Select job to complete:*",parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(kb))
 
+def _md(text):
+    """Escape Markdown symbols so job names with _ * ` [ show correctly."""
+    return re.sub(r"([_*`\[])", r"\\\1", str(text))
+
+def _kb_home():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Main Menu",callback_data="back_main")]])
+
 async def cb_do_complete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Step 1: ask for confirmation (nothing is changed yet)
     q=update.callback_query; await q.answer()
     jid=int(q.data.replace("do_complete_",""))
     j=get_job(jid)
-    if j:
-        set_job_status(jid,"completed")
-        s=job_summary(j["name"])
-        await q.edit_message_text(
-            f"✅ *{j['name']}* completed!\n📦 {float(s['vol']):.1f} m³ | {s['trips']} trips",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Main Menu",callback_data="back_main")]]))
+    if not j or j.get("status")!="active":
+        await q.edit_message_text("ℹ️ This job is no longer active.",reply_markup=_kb_home()); return
+    s=job_summary(j["name"])
+    await q.edit_message_text(
+        f"✅ *Complete this job?*\n\n🏗️ {_md(j['name'])}\n📦 {float(s['vol']):.1f} m³ | {s['trips']} trips\n\n"
+        f"_After completing, no more trips can be logged to this job._",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Yes, complete job",callback_data=f"do_complete_ok_{jid}")],
+            [InlineKeyboardButton("⬅️ No, go back",callback_data="complete_job")]]))
+
+async def cb_do_complete_ok(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Step 2: confirmed — complete the job
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id):
+        await q.edit_message_text("🚫 Admins only.",reply_markup=kb_back()); return
+    jid=int(q.data.replace("do_complete_ok_",""))
+    j=get_job(jid)
+    if not j or j.get("status")!="active":
+        await q.edit_message_text("ℹ️ This job is no longer active.",reply_markup=_kb_home()); return
+    set_job_status(jid,"completed")
+    s=job_summary(j["name"])
+    await q.edit_message_text(
+        f"✅ *{_md(j['name'])}* completed!\n📦 {float(s['vol']):.1f} m³ | {s['trips']} trips",
+        parse_mode="Markdown",reply_markup=_kb_home())
 
 async def cb_cancel_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query; await q.answer()
@@ -721,13 +775,32 @@ async def cb_cancel_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(kb))
 
 async def cb_do_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Step 1: ask for confirmation (nothing is changed yet)
     q=update.callback_query; await q.answer()
     jid=int(q.data.replace("do_cancel_",""))
     j=get_job(jid)
-    if j:
-        set_job_status(jid,"cancelled")
-        await q.edit_message_text(f"❌ *{j['name']}* cancelled.",parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Main Menu",callback_data="back_main")]]))
+    if not j or j.get("status")!="active":
+        await q.edit_message_text("ℹ️ This job is no longer active.",reply_markup=_kb_home()); return
+    s=job_summary(j["name"])
+    await q.edit_message_text(
+        f"❌ *Cancel this job?*\n\n🏗️ {_md(j['name'])}\n📦 {float(s['vol']):.1f} m³ | {s['trips']} trips\n\n"
+        f"_After cancelling, no more trips can be logged to this job._",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Yes, cancel job",callback_data=f"do_cancel_ok_{jid}")],
+            [InlineKeyboardButton("⬅️ No, go back",callback_data="cancel_job")]]))
+
+async def cb_do_cancel_ok(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Step 2: confirmed — cancel the job
+    q=update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id):
+        await q.edit_message_text("🚫 Admins only.",reply_markup=kb_back()); return
+    jid=int(q.data.replace("do_cancel_ok_",""))
+    j=get_job(jid)
+    if not j or j.get("status")!="active":
+        await q.edit_message_text("ℹ️ This job is no longer active.",reply_markup=_kb_home()); return
+    set_job_status(jid,"cancelled")
+    await q.edit_message_text(f"❌ *{_md(j['name'])}* cancelled.",parse_mode="Markdown",reply_markup=_kb_home())
 
 
 # ─────────────────────────────────────────────
@@ -1060,7 +1133,8 @@ def main():
 
     add_job_conv=ConversationHandler(
         entry_points=[CallbackQueryHandler(conv_job_start,pattern="^add_job$")],
-        states={ASK_NEW_JOB_NAME:[MessageHandler(filters.TEXT&~filters.COMMAND,conv_job_save)]},
+        states={ASK_NEW_JOB_NAME:[MessageHandler(filters.TEXT&~filters.COMMAND,conv_job_save)],
+                CONFIRM_NEW_JOB: [CallbackQueryHandler(conv_job_confirm,pattern="^jobadd_(yes|edit|no)$")]},
         fallbacks=[CommandHandler("cancel",conv_cancel)],
         allow_reentry=True,
     )
@@ -1101,6 +1175,8 @@ def main():
     app.add_handler(CallbackQueryHandler(cb_cancel_menu,     pattern="^cancel_job$"),               group=1)
     app.add_handler(CallbackQueryHandler(cb_do_complete,     pattern="^do_complete_\\d+$"),         group=1)
     app.add_handler(CallbackQueryHandler(cb_do_cancel,       pattern="^do_cancel_\\d+$"),           group=1)
+    app.add_handler(CallbackQueryHandler(cb_do_complete_ok,  pattern="^do_complete_ok_\\d+$"),      group=1)
+    app.add_handler(CallbackQueryHandler(cb_do_cancel_ok,    pattern="^do_cancel_ok_\\d+$"),        group=1)
     app.add_handler(CallbackQueryHandler(cb_del_menu,        pattern="^delete_reports_menu$"),      group=1)
     app.add_handler(CallbackQueryHandler(cb_del_ask,         pattern="^delask_(daily|weekly|monthly|all)$"), group=1)
     app.add_handler(CallbackQueryHandler(cb_del_do,          pattern="^deldo_(daily|weekly|monthly|all)$"),  group=1)
